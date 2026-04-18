@@ -1,0 +1,161 @@
+import { HeadcountRequest } from "./types";
+
+export const SEED_REQUESTS: HeadcountRequest[] = [
+  {
+    id: "HC-1042",
+    roleTitle: "Senior Backend Engineer",
+    department: "Engineering",
+    manager: "Priya Raman",
+    justification:
+      "Platform team is behind on the payments migration roadmap. Adding a senior IC unblocks Q3 reliability goals and offloads on-call burden from two engineers at risk of burnout.",
+    employmentType: "full_time",
+    level: "L5",
+    salaryMin: 170000,
+    salaryMax: 210000,
+    startDate: "2026-06-01",
+    urgency: "high",
+    status: "pending_vp",
+    createdAt: "2026-04-10T14:20:00Z",
+    history: [
+      {
+        stage: "finance",
+        approver: "Dana Cho",
+        decision: "approved",
+        note: "Budget confirmed against FY26 engineering plan.",
+        timestamp: "2026-04-12T16:02:00Z",
+      },
+    ],
+  },
+  {
+    id: "HC-1041",
+    roleTitle: "People Operations Specialist",
+    department: "People",
+    manager: "Marcus Lee",
+    justification:
+      "Onboarding volume doubled QoQ. Current team is missing SLAs on I-9 processing and new-hire setup.",
+    employmentType: "full_time",
+    level: "L3",
+    salaryMin: 85000,
+    salaryMax: 105000,
+    startDate: "2026-05-15",
+    urgency: "medium",
+    status: "pending_finance",
+    createdAt: "2026-04-15T09:11:00Z",
+    history: [],
+  },
+  {
+    id: "HC-1040",
+    roleTitle: "Enterprise AE",
+    department: "Sales",
+    manager: "Sasha Klein",
+    justification:
+      "Top-of-funnel in the mid-market segment is 2.3x quota capacity. Adding one AE recovers $1.8M in pipeline coverage.",
+    employmentType: "full_time",
+    level: "L4",
+    salaryMin: 130000,
+    salaryMax: 160000,
+    startDate: "2026-05-01",
+    urgency: "high",
+    status: "approved",
+    createdAt: "2026-03-28T11:00:00Z",
+    history: [
+      {
+        stage: "finance",
+        approver: "Dana Cho",
+        decision: "approved",
+        note: "OTE modeled into Q2 forecast.",
+        timestamp: "2026-03-30T13:20:00Z",
+      },
+      {
+        stage: "vp",
+        approver: "Ravi Shah",
+        decision: "approved",
+        note: "Confirmed territory need.",
+        timestamp: "2026-04-01T10:15:00Z",
+      },
+      {
+        stage: "chro",
+        approver: "Elena Ford",
+        decision: "approved",
+        note: "Leveling aligned with comp band.",
+        timestamp: "2026-04-03T17:45:00Z",
+      },
+    ],
+  },
+  {
+    id: "HC-1039",
+    roleTitle: "Junior Designer",
+    department: "Marketing",
+    manager: "Noah Patel",
+    justification:
+      "Support brand refresh and event collateral. Could potentially be absorbed by contractor pipeline.",
+    employmentType: "full_time",
+    level: "L2",
+    salaryMin: 70000,
+    salaryMax: 85000,
+    startDate: "2026-06-15",
+    urgency: "low",
+    status: "rejected",
+    createdAt: "2026-03-22T08:40:00Z",
+    history: [
+      {
+        stage: "finance",
+        approver: "Dana Cho",
+        decision: "approved",
+        note: "Within department allocation.",
+        timestamp: "2026-03-24T11:00:00Z",
+      },
+      {
+        stage: "vp",
+        approver: "Mira Osei",
+        decision: "rejected",
+        note: "Let's revisit after brand refresh scope lands. Contractor-first for now.",
+        timestamp: "2026-03-27T15:30:00Z",
+      },
+    ],
+  },
+  {
+    id: "HC-1038",
+    roleTitle: "Data Engineer",
+    department: "Engineering",
+    manager: "Priya Raman",
+    justification:
+      "Analytics dbt models now exceed what the current team can maintain. Backfill for attrition.",
+    employmentType: "full_time",
+    level: "L4",
+    salaryMin: 140000,
+    salaryMax: 175000,
+    startDate: "2026-05-20",
+    urgency: "medium",
+    status: "pending_chro",
+    createdAt: "2026-04-05T10:00:00Z",
+    history: [
+      {
+        stage: "finance",
+        approver: "Dana Cho",
+        decision: "approved",
+        note: "Backfill — no net new cost.",
+        timestamp: "2026-04-07T09:30:00Z",
+      },
+      {
+        stage: "vp",
+        approver: "Ravi Shah",
+        decision: "approved",
+        note: "Critical for data platform stability.",
+        timestamp: "2026-04-09T14:10:00Z",
+      },
+    ],
+  },
+];
+
+export const DEPARTMENTS = [
+  "Engineering",
+  "Sales",
+  "Marketing",
+  "People",
+  "Finance",
+  "Customer Success",
+  "Operations",
+];
+
+export const LEVELS = ["L1", "L2", "L3", "L4", "L5", "L6", "L7"];
