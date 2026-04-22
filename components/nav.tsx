@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { Users, Inbox, LayoutDashboard, PlusCircle } from "lucide-react";
+import { useStore } from "@/lib/store";
+import { Users, Inbox, LayoutDashboard, PlusCircle, RotateCcw } from "lucide-react";
 
 const links = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -13,6 +14,14 @@ const links = [
 
 export function Nav() {
   const pathname = usePathname();
+  const reset = useStore((s) => s.reset);
+
+  function onReset() {
+    if (confirm("Reset demo data? All requests will be restored to the starting state.")) {
+      reset();
+    }
+  }
+
   return (
     <aside className="hidden w-64 shrink-0 border-r bg-card/50 md:flex md:flex-col">
       <div className="flex h-16 items-center gap-2 border-b px-6">
@@ -46,8 +55,20 @@ export function Nav() {
           );
         })}
       </nav>
-      <div className="mt-auto border-t p-4 text-xs text-muted-foreground">
-        Prototype · Seeded demo data
+      <div className="mt-auto space-y-3 border-t p-4">
+        <button
+          onClick={onReset}
+          className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+          Reset demo data
+        </button>
+        <div className="flex items-center gap-2 px-3 text-xs text-muted-foreground">
+          <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+            PROTOTYPE
+          </span>
+          <span>Demo only</span>
+        </div>
       </div>
     </aside>
   );

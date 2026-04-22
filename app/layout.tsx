@@ -15,7 +15,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <div className="flex min-h-screen">
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-center text-xs text-amber-900">
+          <span className="font-semibold">Prototype</span> · Demo data only · Built for client review
+        </div>
+        <div className="flex min-h-[calc(100vh-34px)]">
           <Nav />
           <main className="flex-1 overflow-auto">
             <div className="mx-auto max-w-6xl px-6 py-10 animate-fade-in">
