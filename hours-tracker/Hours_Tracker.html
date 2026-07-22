@@ -1,0 +1,1086 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hours Tracker</title>
+<!--
+  Hours Tracker — small-business time log for Chuck (Polymetis LLC)
+  Single file, no dependencies, data lives in this browser's localStorage.
+
+  DEFERRED (conscious choices, not oversights):
+  - True email ingestion (Gmail API / forwarding address) — paste-the-thread + Import&merge cover it for now
+  - Client/project tagging with per-client totals — add when >1 active client
+  - XLSX export (CSV covers invoicing; Excel opens CSV fine)
+  - Rounding rules (e.g. round up to nearest 0.25) — add if an invoice needs it
+  - Bare-number logging ("2 monday meeting" with no unit) — omitted to keep pasted-email parsing clean; entries need hrs/mins/a range
+  - Weekday-name dating ("monday" -> a date) — descriptions strip weekday words; dates come from M/D, today/yesterday, or email headers
+-->
+<style>
+  :root{
+    --ink:#1a2332; --ink-soft:#5a6a80; --line:#dde4ec;
+    --bg:#f4f6f9; --card:#ffffff;
+    --accent:#0d5c63; --accent-soft:#e3f0f1;
+    --amber:#b45309; --amber-soft:#fdf3e3;
+    --green:#15703d; --green-soft:#e5f3ec;
+    --red:#b3323c; --red-soft:#fbe9ea;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{font-family:"Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); padding:24px 16px 60px;}
+  .wrap{max-width:880px; margin:0 auto;}
+  header{display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:4px;}
+  h1{font-size:26px; letter-spacing:-.3px;}
+  h1 .clock{color:var(--accent);}
+  .tagline{color:var(--ink-soft); font-size:13px;}
+  .hint{font-size:12.5px; color:var(--ink-soft); margin:6px 0 18px; line-height:1.5;}
+  .hint code{background:var(--accent-soft); color:var(--accent); padding:1px 6px; border-radius:4px; font-size:12px;}
+
+  .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:18px; box-shadow:0 1px 3px rgba(26,35,50,.05);}
+  .card h2{font-size:15px; margin-bottom:10px; display:flex; align-items:center; gap:8px;}
+
+  textarea{width:100%; min-height:96px; border:1.5px solid var(--line); border-radius:8px; padding:10px 12px; font:inherit; font-size:14px; resize:vertical; background:#fcfdfe;}
+  textarea:focus{outline:none; border-color:var(--accent);}
+
+  .preview{margin-top:12px;}
+  .preview-empty{color:var(--ink-soft); font-size:13px; font-style:italic; margin-top:10px;}
+  table{width:100%; border-collapse:collapse; font-size:13.5px;}
+  th{text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--ink-soft); padding:6px 8px; border-bottom:1px solid var(--line);}
+  td{padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:middle;}
+  tr:last-child td{border-bottom:none;}
+  td input[type=date], td input[type=text], td input[type=number]{border:1px solid var(--line); border-radius:6px; padding:4px 6px; font:inherit; font-size:13px;}
+  td input[type=number]{width:72px;}
+  td input.note-in{width:100%;}
+  .src{color:var(--ink-soft); font-size:12px; max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .warnbadge{display:inline-block; background:var(--amber-soft); color:var(--amber); font-size:11px; border-radius:5px; padding:1px 6px; margin-left:6px;}
+  .dupbadge{display:inline-block; background:var(--red-soft); color:var(--red); font-size:11px; border-radius:5px; padding:1px 6px; margin-left:6px;}
+
+  .btn{border:none; border-radius:8px; padding:9px 16px; font:inherit; font-size:13.5px; font-weight:600; cursor:pointer; transition:filter .1s;}
+  .btn:hover{filter:brightness(1.08);}
+  .btn-primary{background:var(--accent); color:#fff;}
+  .btn-ghost{background:var(--accent-soft); color:var(--accent);}
+  .btn-danger-ghost{background:var(--red-soft); color:var(--red);}
+  .btn-sm{padding:4px 10px; font-size:12px; border-radius:6px;}
+  .btn[disabled]{opacity:.45; cursor:not-allowed;}
+  .btnrow{display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; align-items:center;}
+
+  .skipped{margin-top:10px; font-size:12px; color:var(--ink-soft);}
+  .skipped summary{cursor:pointer; user-select:none;}
+  .skipped li{margin-left:18px; margin-top:3px;}
+
+  .cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-bottom:18px;}
+  .stat{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px;}
+  .stat .lbl{font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--ink-soft);}
+  .stat .val{font-size:24px; font-weight:700; color:var(--accent); margin-top:2px;}
+  .stat .sub{font-size:11.5px; color:var(--ink-soft); margin-top:2px;}
+
+  .weekblock{margin-bottom:6px;}
+  .weekhead{display:flex; justify-content:space-between; align-items:center; background:var(--accent-soft); border-radius:8px; padding:9px 12px; cursor:pointer; user-select:none;}
+  .weekhead .wl{font-weight:700; font-size:14px; color:var(--accent);}
+  .weekhead .wt{font-weight:700; font-size:14px;}
+  .daysub{margin:6px 0 12px;}
+  .dayrow td:first-child{font-weight:600; white-space:nowrap;}
+  .entry-note{color:var(--ink-soft); font-size:12.5px;}
+  .rowbtns{white-space:nowrap; text-align:right;}
+  .icon-btn{background:none; border:none; cursor:pointer; font-size:14px; padding:2px 4px; opacity:.55;}
+  .icon-btn:hover{opacity:1;}
+
+  .settings-grid{display:flex; gap:22px; flex-wrap:wrap; align-items:center; font-size:13.5px;}
+  .settings-grid label{display:flex; align-items:center; gap:7px;}
+  select,input.rate{border:1px solid var(--line); border-radius:6px; padding:5px 8px; font:inherit; font-size:13px;}
+  input.rate{width:90px;}
+
+  .periodnav{display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--accent-soft); border-radius:8px; padding:8px 12px;}
+  .periodlabel{text-align:center;}
+  .pl-range{font-weight:700; font-size:15px; color:var(--accent);}
+  .pl-sub{font-size:12px; color:var(--ink-soft);}
+  .sumfields{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px;}
+  .sumfields label{display:flex; flex-direction:column; gap:3px; font-size:12px; color:var(--ink-soft);}
+  .sumfields label.full{grid-column:1 / -1;}
+  .sumfields input,.sumfields textarea{border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; font-size:13px; color:var(--ink);}
+  @media(max-width:560px){ .sumfields{grid-template-columns:1fr;} }
+  .toast{position:fixed; bottom:22px; left:50%; transform:translateX(-50%); background:var(--ink); color:#fff; padding:10px 20px; border-radius:8px; font-size:13.5px; opacity:0; pointer-events:none; transition:opacity .25s; z-index:50;}
+  .toast.show{opacity:.95;}
+  .empty-state{text-align:center; color:var(--ink-soft); padding:26px 10px; font-size:14px;}
+  @media print{ .no-print{display:none;} body{background:#fff; padding:0;} .card{border:none; box-shadow:none;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span class="clock">⏱</span> Hours Tracker</h1>
+    <span class="tagline">type it or paste it — daily &amp; weekly totals, zero math</span>
+  </header>
+  <p class="hint no-print">
+    Understands things like <code>.5 hrs 7/19</code> · <code>40 mins 730 - 810</code> · <code>4:30-5 on 7/20</code> ·
+    <code>plus one hour</code> · <code>1.5 hrs yesterday</code> — or paste a whole Gmail thread you sent yourself
+    and it pulls the dates from the email headers. No date? It assumes today.
+  </p>
+
+  <div class="card no-print">
+    <h2>➕ Add time</h2>
+    <textarea id="inbox" placeholder=".5 hrs 7/19&#10;4:30-5 on 7/20&#10;…or paste an email thread here"></textarea>
+    <div id="preview" class="preview"></div>
+    <div class="btnrow">
+      <button class="btn btn-primary" id="btn-add" disabled>Add entries</button>
+      <button class="btn btn-ghost" id="btn-clear">Clear box</button>
+      <button class="btn btn-ghost" id="btn-undo" style="display:none">↩ Undo</button>
+      <span id="addmsg" style="font-size:12.5px;color:var(--ink-soft);"></span>
+    </div>
+    <div id="skipped"></div>
+  </div>
+
+  <div class="cards" id="statcards"></div>
+
+  <div class="card">
+    <h2>📅 Log <span style="font-weight:400;font-size:12px;color:var(--ink-soft);">(newest week first — click a week to expand)</span></h2>
+    <div id="log"></div>
+  </div>
+
+  <div class="card">
+    <h2>📤 Bi-weekly summary <span style="font-weight:400;font-size:12px;color:var(--ink-soft);">(for approval — Sunday–Saturday weeks)</span></h2>
+    <div class="periodnav no-print">
+      <button class="btn btn-ghost btn-sm" id="sum-prev">◀ Prev</button>
+      <div class="periodlabel">
+        <div id="sum-range" class="pl-range">—</div>
+        <div class="pl-sub"><b id="sum-total">0 hrs</b> · <span id="sum-status"></span></div>
+      </div>
+      <button class="btn btn-ghost btn-sm" id="sum-next">Next ▶</button>
+    </div>
+    <textarea id="sum-draft" style="min-height:240px; margin-top:12px; font-family:ui-monospace,Consolas,monospace; font-size:13px; line-height:1.5;"></textarea>
+    <div class="btnrow no-print">
+      <button class="btn btn-primary" id="sum-copy">📋 Copy</button>
+      <button class="btn btn-ghost" id="sum-email">✉️ Open in email</button>
+      <button class="btn btn-ghost" id="sum-rebuild">🔄 Rebuild draft</button>
+      <span id="sum-stale" style="display:none; font-size:12px; color:var(--amber);">entries changed — click Rebuild to refresh</span>
+    </div>
+    <details class="no-print" style="margin-top:12px;">
+      <summary style="cursor:pointer; font-size:13px; color:var(--accent);">✏️ Edit greeting, signature &amp; recipients</summary>
+      <div class="sumfields">
+        <label>To <input type="text" id="sf-to" placeholder="approver@example.com"></label>
+        <label>Subject line <input type="text" id="sf-subject"></label>
+        <label>Greeting <input type="text" id="sf-greeting"></label>
+        <label>Closing <input type="text" id="sf-closing"></label>
+        <label class="full">Intro paragraph <textarea id="sf-intro" rows="2"></textarea></label>
+        <label class="full">Signature <textarea id="sf-signature" rows="4"></textarea></label>
+        <label>Two-week periods anchored on (a Sunday) <input type="date" id="sf-anchor"></label>
+        <div class="full" style="font-size:12px; color:var(--ink-soft);">Subject line can use <code>{range}</code> and <code>{total}</code>. Edits to the draft above survive until you click Rebuild or change the period.</div>
+      </div>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>🧾 Invoice <span style="font-weight:400;font-size:12px;color:var(--ink-soft);">(same period as the summary above — <span id="inv-period">—</span>)</span></h2>
+    <div class="btnrow no-print">
+      <button class="btn btn-primary" id="inv-print">🖨 Print / Save PDF</button>
+      <button class="btn btn-ghost" id="inv-copy">📋 Copy as text</button>
+      <button class="btn btn-ghost" id="inv-refresh">🔄 Refresh</button>
+      <label style="font-size:12.5px; color:var(--ink-soft); display:flex; align-items:center; gap:6px; margin-left:6px;">Lines:
+        <select id="inv-groupby" style="border:1px solid var(--line);border-radius:6px;padding:4px 6px;font:inherit;font-size:12px;">
+          <option value="day">One per day</option>
+          <option value="entry">One per entry</option>
+        </select>
+      </label>
+    </div>
+    <details class="no-print" style="margin:10px 0;">
+      <summary style="cursor:pointer; font-size:13px; color:var(--accent);">✏️ Edit invoice details (business, client, rate, bank remit)</summary>
+      <div class="sumfields">
+        <label>Your business name <input type="text" id="iv-bizName"></label>
+        <label>Invoice # <input type="text" id="iv-number"></label>
+        <label class="full">Your address <textarea id="iv-bizAddr" rows="2"></textarea></label>
+        <label>Your phone / contact <input type="text" id="iv-bizContact"></label>
+        <label>Service line (subtitle) <input type="text" id="iv-serviceDesc"></label>
+        <label>Bill to (client) <input type="text" id="iv-clientName"></label>
+        <label>Hourly rate $ <input type="number" id="iv-rate" min="0" step="5" placeholder="e.g. 125"></label>
+        <label class="full">Client address <textarea id="iv-clientAddr" rows="2"></textarea></label>
+        <label>Payment terms <input type="text" id="iv-terms" placeholder="Net 15"></label>
+        <label>Remit — beneficiary <input type="text" id="iv-remitBeneficiary"></label>
+        <label>Remit — bank <input type="text" id="iv-remitBank"></label>
+        <label>Remit — routing <input type="text" id="iv-remitRouting"></label>
+        <label>Remit — account <input type="text" id="iv-remitAccount"></label>
+        <label class="full">Thank-you note <textarea id="iv-notes" rows="2"></textarea></label>
+        <div class="full" style="font-size:12px;color:var(--ink-soft);">Bank details stay in this browser only (localStorage) — nothing is uploaded. Enter your real account number when you're ready to send for ACH.</div>
+      </div>
+    </details>
+    <div id="invoice-preview" style="overflow-x:auto;"></div>
+  </div>
+
+  <div class="card no-print">
+    <h2>⚙️ Settings &amp; export</h2>
+    <div class="settings-grid">
+      <label>Week starts
+        <select id="weekstart">
+          <option value="1">Monday</option>
+          <option value="0">Sunday</option>
+        </select>
+      </label>
+      <label>Hourly rate $ <input class="rate" id="rate" type="number" min="0" step="5" placeholder="optional"></label>
+    </div>
+    <div class="btnrow">
+      <button class="btn btn-ghost" id="btn-copy">📋 Copy summary</button>
+      <button class="btn btn-ghost" id="btn-csv">⬇ Export CSV</button>
+      <button class="btn btn-ghost" id="btn-backup">💾 Backup JSON</button>
+      <button class="btn btn-ghost" id="btn-restore">📂 Restore JSON</button>
+      <button class="btn btn-ghost" id="btn-import" title="Add entries from a JSON file (e.g. an automated Gmail pull) — merges with duplicate protection, never replaces">📥 Import &amp; merge JSON</button>
+      <input type="file" id="restorefile" accept=".json" style="display:none">
+      <input type="file" id="importfile" accept=".json" style="display:none">
+      <button class="btn btn-danger-ghost" id="btn-wipe">🗑 Clear all data</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+/* ============================ storage ============================ */
+const LS_KEY = 'polymetis_hours_v1';
+const SUMMARY_DEFAULTS = {
+  to: '',
+  subjectTpl: 'Consulting hours for approval: {range} ({total} hrs)',
+  greeting: 'Hi there,',
+  intro: 'Here are my consulting hours for the period below, sent along for approval with accounts payable. Weeks run Sunday–Saturday.',
+  closing: 'Thanks!',
+  signature: 'Your Name\nYour Title\n(000) 000-0000 | you@example.com\nStreet Address, City, ST ZIP',
+  anchor: '2026-07-19'   // a Sunday; two-week periods are aligned to this (Chuck's chosen anchor)
+};
+const INVOICE_DEFAULTS = {
+  bizName: 'Polymetis',
+  bizAddr: 'Street Address\nCity, ST ZIP',
+  bizContact: '(000) 000-0000',
+  serviceDesc: 'AI & People Analytics Consulting',
+  clientName: 'Client Name',
+  clientAddr: 'Client Street\nCity, ST ZIP',
+  number: '1001',
+  terms: 'Net 15',
+  remitBeneficiary: 'Your Name',
+  remitBank: 'Your Bank',
+  remitRouting: '',
+  remitAccount: '',
+  notes: 'Thank you for your business.',
+  groupBy: 'day'
+};
+let state = load();
+function load(){
+  try{
+    const s = JSON.parse(localStorage.getItem(LS_KEY));
+    if (s && Array.isArray(s.entries)){
+      const firstUpgrade = !s.summary;   // moving to Sun–Sat weeks on first run of this version
+      return {
+        entries: s.entries,
+        weekStart: firstUpgrade ? 0 : (s.weekStart ?? 0),
+        rate: s.rate ?? '',
+        summary: Object.assign({}, SUMMARY_DEFAULTS, s.summary || {}),
+        invoice: Object.assign({}, INVOICE_DEFAULTS, s.invoice || {})
+      };
+    }
+  }catch(e){}
+  return { entries: [], weekStart: 0, rate: '', summary: Object.assign({}, SUMMARY_DEFAULTS), invoice: Object.assign({}, INVOICE_DEFAULTS) };
+}
+function save(){ localStorage.setItem(LS_KEY, JSON.stringify(state)); }
+let undoStack = null; // {type:'add', ids:[]} | {type:'delete', entry:{}}
+
+/* ============================ date utils ============================ */
+const pad = n => String(n).padStart(2,'0');
+function iso(d){ return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
+function fromISO(s){ const [y,m,dd] = s.split('-').map(Number); return new Date(y, m-1, dd); }
+function today(){ const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+function weekStartOf(d, ws){ // ws: 0=Sun 1=Mon
+  const x = new Date(d); const day = x.getDay();
+  const diff = (day - ws + 7) % 7; x.setDate(x.getDate() - diff); return x;
+}
+const DAYNAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const MONNAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function fmtDay(s){ const d = fromISO(s); return DAYNAMES[d.getDay()]+' '+(d.getMonth()+1)+'/'+d.getDate(); }
+function fmtWeekLabel(ws){ const a = fromISO(ws); const b = new Date(a); b.setDate(b.getDate()+6);
+  return 'Week of '+MONNAMES[a.getMonth()]+' '+a.getDate()+' – '+MONNAMES[b.getMonth()]+' '+b.getDate()+', '+b.getFullYear(); }
+
+/* ============================ formatting ============================ */
+function hrs(min){ return Math.round(min/60*100)/100; }
+function fmtHM(min){
+  const h = Math.floor(min/60), m = Math.round(min%60);
+  if (h && m) return h+'h '+m+'m';
+  if (h) return h+'h';
+  return m+'m';
+}
+function fmtBoth(min){ return hrs(min)+' h'+(min%60 ? ' ('+fmtHM(min)+')' : ''); }
+function money(min){
+  const r = parseFloat(state.rate);
+  if (!r) return '';
+  return '$'+ (Math.round(hrs(min)*r*100)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+
+/* ============================ parser ============================ */
+const MONTH_RE = 'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?';
+const MONTH_NUM = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+const WORDNUM = {one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,eleven:11,twelve:12,an:1,a:1};
+
+// "Fri, Jul 17, 2026 at 8:09 AM" / "On Jul 17, 2026, at ..." → context date for lines that follow
+function findHeaderDate(line){
+  const m = line.match(new RegExp('\\b('+MONTH_RE+')\\.?\\s+(\\d{1,2}),?\\s+(\\d{4})','i'));
+  if (m){
+    const mo = MONTH_NUM[m[1].slice(0,3).toLowerCase()];
+    const d = new Date(+m[3], mo-1, +m[2]);
+    if (!isNaN(d)) return d;
+  }
+  const m2 = line.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/); // 7/17/26 in headers/footers
+  if (m2){
+    let y = +m2[3]; if (y < 100) y += 2000;
+    const d = new Date(y, +m2[1]-1, +m2[2]);
+    if (!isNaN(d)) return d;
+  }
+  return null;
+}
+
+function isBoilerplate(line){
+  return /^(to|from|cc|bcc|subject|date)\s*:/i.test(line)
+    || /sent from my/i.test(line)
+    || /quoted text hidden/i.test(line)
+    || /https?:\/\//i.test(line)
+    || /mail\.google\.com/i.test(line)
+    || /^\d{1,2}\/\d{1,2}\/\d{2,4},\s*\d{1,2}:\d{2}\s*[ap]m\s+gmail\b/i.test(line)  // Gmail print footer
+    || /^\d+\s+messages?\s*$/i.test(line)
+    || /@[a-z0-9.-]+\.(com|org|net|edu|gov|io)/i.test(line)
+    || /\bwrote\s*:?\s*$/i.test(line)
+    || /\d{3}[-. ]\d{3}[-. ]\d{4}/.test(line)          // phone number
+    || /\b\d{5}(-\d{4})?\s*$/.test(line) && /\b(ave|st|street|road|rd|blvd|dr|suite|ste)\b/i.test(line); // address
+}
+
+// "730" → {h:7,m:30}; "8" → {h:8,m:0}; "4:30" → {h:4,m:30}
+function parseClock(tok){
+  tok = tok.replace(':','');
+  if (!/^\d{1,4}$/.test(tok)) return null;
+  let h, m;
+  if (tok.length <= 2){ h = +tok; m = 0; }
+  else { h = +tok.slice(0, tok.length-2); m = +tok.slice(-2); }
+  if (h > 23 || m > 59) return null;
+  return {h, m};
+}
+function toMinOfDay(c, mer){
+  let h = c.h;
+  if (mer){
+    mer = mer.toLowerCase();
+    if (mer.startsWith('p') && h < 12) h += 12;
+    if (mer.startsWith('a') && h === 12) h = 0;
+  }
+  return h*60 + c.m;
+}
+
+// time range → duration minutes, or null
+function findRange(line){
+  const re = /(\d{1,2}:\d{2}|\d{1,4})\s*(am|pm|a|p)?\s*(?:-|–|—|\bto\b)\s*(\d{1,2}:\d{2}|\d{1,4})\s*(am|pm|a|p)?/i;
+  const m = line.match(re);
+  if (!m) return null;
+  // guard: part of a longer digit chain (phone, ID)? check what follows the match
+  const after = line.slice(m.index + m[0].length);
+  if (/^\s*[-–]\s*\d/.test(after)) return null;
+  const before = line.slice(0, m.index);
+  if (/\d[-–]\s*$/.test(before)) return null;
+  // guard: don't treat a date like 7/19 - skip if the "range" is actually inside a date slashes context
+  const s = parseClock(m[1]), e = parseClock(m[3]);
+  if (!s || !e) return null;
+  let sm = toMinOfDay(s, m[2]), em = toMinOfDay(e, m[4]);
+  if (em <= sm) em += 720;          // 4:30-5 → same half-day; 11-1 → cross noon
+  if (em <= sm) em += 720;
+  const dur = em - sm;
+  if (dur <= 0 || dur > 12*60) return null;
+  return { minutes: dur, text: m[0] };
+}
+
+// "Hrs:" convention — a bare number right after the marker means hours (e.g. "Hrs: .5 7/20" → 30 min).
+// Only used when no explicit duration/range is found. Skips date/time-shaped tokens (7/20, 9:15).
+function findBareHours(line){
+  const m = line.match(/\bh(?:ou)?rs?\s*:/i);
+  if (!m) return null;
+  const rest = line.slice(m.index + m[0].length);
+  for (const tok of rest.split(/\s+/)){
+    if (!tok || /[\/:]/.test(tok)) continue;                 // skip 7/20, 9:15, etc.
+    if (/^\.?\d{1,2}(?:\.\d{1,2})?$/.test(tok)){
+      const v = parseFloat(tok);
+      if (v > 0 && v <= 24) return Math.round(v * 60);
+    }
+  }
+  return null;
+}
+
+// explicit durations: ".5 hrs", "40 mins", "1 hr 20 min", "plus one hour", "hour and a half"
+function findDuration(line){
+  let s = ' ' + line.toLowerCase() + ' ';
+  // word-number & phrase normalization
+  s = s.replace(/\bhalf\s+an?\s+hour\b/g, '0.5 hours')
+       .replace(/\ba\s+half\s+hour\b/g, '0.5 hours')
+       .replace(/\bquarter\s+(of\s+an?\s+)?hour\b/g, '0.25 hours')
+       .replace(/\ban?\s+hour\s+and\s+a\s+half\b/g, '1.5 hours')
+       .replace(/\ban?\s+hour\s+and\s+a\s+quarter\b/g, '1.25 hours');
+  s = s.replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|an|a)\s+(and\s+a\s+half\s+)?(hours?|hrs?|hr|minutes?|mins?|min)\b/g,
+    (all, w, half, unit) => (WORDNUM[w] + (half ? 0.5 : 0)) + ' ' + unit);
+  s = s.replace(/\b(\d+(?:\.\d+)?)\s+and\s+a\s+half\s+(hours?|hrs?)\b/g, (all,n,u) => (parseFloat(n)+0.5)+' '+u);
+
+  let min = 0, found = false;
+  const hm = s.match(/(?:^|[^\d.:])(\d*\.?\d+)\s*(hours?|hrs?|hr|h)\b/);
+  if (hm){ min += parseFloat(hm[1]) * 60; found = true; }
+  const mm = s.match(/(?:^|[^\d.:])(\d*\.?\d+)\s*(minutes?|mins?|min|m)\b(?!\s*[-–])/);
+  if (mm && !(mm[2] === 'm' && /\d\s*(a|p)m/.test(s))){ min += parseFloat(mm[1]); found = true; }
+  if (!found || min <= 0 || min > 24*60) return null;
+  return Math.round(min);
+}
+
+// date mentioned inline: "7/19", "7/19/26", "on 7/20", "yesterday", "jul 17"
+function findInlineDate(line, ref){
+  const t = today();
+  if (/\byesterday\b/i.test(line)){ const d = new Date(t); d.setDate(d.getDate()-1); return d; }
+  if (/\btoday\b/i.test(line)) return t;
+  const m = line.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+  if (m){
+    let y = m[3] ? +m[3] : (ref || t).getFullYear();
+    if (y < 100) y += 2000;
+    const mo = +m[1], dd = +m[2];
+    if (mo >= 1 && mo <= 12 && dd >= 1 && dd <= 31){
+      let d = new Date(y, mo-1, dd);
+      // no year given and the date lands way in the future → assume last year
+      if (!m[3] && d - t > 60*86400000) d = new Date(y-1, mo-1, dd);
+      if (!isNaN(d)) return d;
+    }
+  }
+  const mn = line.match(new RegExp('\\b('+MONTH_RE+')\\.?\\s+(\\d{1,2})(?:,?\\s+(\\d{4}))?\\b','i'));
+  if (mn){
+    const mo = MONTH_NUM[mn[1].slice(0,3).toLowerCase()];
+    const y = mn[3] ? +mn[3] : (ref || t).getFullYear();
+    const d = new Date(y, mo-1, +mn[2]);
+    if (!isNaN(d)) return d;
+  }
+  return null;
+}
+
+function parseBatch(text){
+  const lines = text.split(/\r?\n/);
+  // pre-scan: first email-header date becomes the starting context
+  let ctx = null;
+  for (const l of lines){ const d = findHeaderDate(l); if (d){ ctx = d; break; } }
+  const out = [], skipped = [];
+  for (const raw of lines){
+    const line = raw.trim();
+    if (!line) continue;
+    const hd = findHeaderDate(line);
+    if (hd) ctx = hd;
+    if (isBoilerplate(line)){ skipped.push(line); continue; }
+
+    const dur = findDuration(line);
+    const rng = findRange(line);
+    const bare = (!dur && !rng) ? findBareHours(line) : null;   // "Hrs: .5 7/20" style
+    if (!dur && !rng && !bare){
+      // pure header/date lines are expected noise; only surface lines with letters/digits
+      if (!hd && /[a-z0-9]/i.test(line)) skipped.push(line);
+      continue;
+    }
+    const minutes = dur || (rng ? rng.minutes : bare);
+    let warn = '';
+    if (dur && rng && Math.abs(dur - rng.minutes) > 1)
+      warn = 'range says ' + fmtHM(rng.minutes);
+    const d = findInlineDate(line, ctx) || ctx || today();
+    out.push({ date: iso(d), minutes, source: line, note: '', warn, include: true });
+  }
+  // in-batch dedupe (same subject repeated in a Gmail thread)
+  const seen = new Set();
+  for (const e of out){
+    const k = e.date + '|' + e.minutes + '|' + e.source.toLowerCase();
+    if (seen.has(k)) e.include = false, e.dup = 'repeat in paste';
+    seen.add(k);
+  }
+  // flag likely duplicates vs saved log
+  for (const e of out){
+    if (state.entries.some(x => x.date === e.date && x.minutes === e.minutes && x.source.toLowerCase() === e.source.toLowerCase()))
+      { e.dup = 'already in log'; e.include = false; }
+  }
+  return { entries: out, skipped };
+}
+
+/* ============================ preview ============================ */
+let parsed = { entries: [], skipped: [] };
+const $ = id => document.getElementById(id);
+
+function renderPreview(){
+  const box = $('preview'), sk = $('skipped');
+  if (!$('inbox').value.trim()){ box.innerHTML=''; sk.innerHTML=''; $('btn-add').disabled = true; $('btn-add').textContent = 'Add entries'; return; }
+  if (!parsed.entries.length){
+    box.innerHTML = '<div class="preview-empty">Nothing I can read as time yet — try “.5 hrs 7/19” or “4:30-5”.</div>';
+    sk.innerHTML=''; $('btn-add').disabled = true; $('btn-add').textContent = 'Add entries'; return;
+  }
+  let h = '<table><tr><th></th><th>Date</th><th>Time</th><th>From</th></tr>';
+  parsed.entries.forEach((e,i)=>{
+    h += '<tr>'
+      + '<td><input type="checkbox" data-i="'+i+'" class="inc" '+(e.include?'checked':'')+'></td>'
+      + '<td><input type="date" class="pdate" data-i="'+i+'" value="'+e.date+'"></td>'
+      + '<td><b>'+fmtBoth(e.minutes)+'</b>'
+      + (e.warn ? '<span class="warnbadge">⚠ '+e.warn+'</span>' : '')
+      + (e.dup ? '<span class="dupbadge">dup? '+e.dup+'</span>' : '')
+      + '</td>'
+      + '<td class="src" title="'+esc(e.source)+'">'+esc(e.source)+'</td></tr>';
+  });
+  h += '</table>';
+  box.innerHTML = h;
+  const n = parsed.entries.filter(e=>e.include).length;
+  $('btn-add').disabled = n === 0;
+  $('btn-add').textContent = 'Add ' + n + ' ' + (n===1?'entry':'entries') + ' (' + fmtBoth(parsed.entries.filter(e=>e.include).reduce((a,e)=>a+e.minutes,0)) + ')';
+  sk.innerHTML = parsed.skipped.length
+    ? '<details class="skipped"><summary>' + parsed.skipped.length + ' line(s) ignored (boilerplate / no time found)</summary><ul>'
+      + parsed.skipped.map(s=>'<li>'+esc(s)+'</li>').join('') + '</ul></details>'
+    : '';
+  box.querySelectorAll('.inc').forEach(cb => cb.onchange = ev => { parsed.entries[+ev.target.dataset.i].include = ev.target.checked; renderPreview(); });
+  box.querySelectorAll('.pdate').forEach(inp => inp.onchange = ev => { if(ev.target.value) parsed.entries[+ev.target.dataset.i].date = ev.target.value; });
+}
+function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+let debounceT = null;
+$('inbox').addEventListener('input', () => {
+  clearTimeout(debounceT);
+  debounceT = setTimeout(() => { parsed = parseBatch($('inbox').value); renderPreview(); }, 250);
+});
+
+/* ============================ add / undo ============================ */
+$('btn-add').onclick = () => {
+  const add = parsed.entries.filter(e => e.include);
+  if (!add.length) return;
+  const ids = [];
+  for (const e of add){
+    const id = 'e' + Date.now() + Math.random().toString(36).slice(2,7);
+    ids.push(id);
+    state.entries.push({ id, date: e.date, minutes: e.minutes, source: e.source, note: e.note });
+  }
+  save();
+  undoStack = { type:'add', ids };
+  $('btn-undo').style.display = '';
+  $('inbox').value = ''; parsed = {entries:[],skipped:[]}; renderPreview();
+  toast('Added ' + add.length + ' ' + (add.length===1?'entry':'entries'));
+  renderAll();
+};
+$('btn-clear').onclick = () => { $('inbox').value=''; parsed={entries:[],skipped:[]}; renderPreview(); };
+$('btn-undo').onclick = () => {
+  if (!undoStack) return;
+  if (undoStack.type === 'add') state.entries = state.entries.filter(e => !undoStack.ids.includes(e.id));
+  else if (undoStack.type === 'delete') state.entries.push(undoStack.entry);
+  save(); undoStack = null; $('btn-undo').style.display='none';
+  toast('Undone'); renderAll();
+};
+
+/* ============================ stats & log ============================ */
+const expanded = new Set();
+function renderAll(){ renderStats(); renderLog(); renderSummaryAll(); if (typeof renderInvoice === 'function') renderInvoice(); }
+
+function totalsBetween(a, b){ // inclusive ISO strings
+  return state.entries.filter(e => e.date >= a && e.date <= b).reduce((s,e)=>s+e.minutes,0);
+}
+function renderStats(){
+  const t = today(), ti = iso(t);
+  const ws = weekStartOf(t, state.weekStart), wsi = iso(ws);
+  const we = new Date(ws); we.setDate(we.getDate()+6);
+  const lws = new Date(ws); lws.setDate(lws.getDate()-7);
+  const lwe = new Date(ws); lwe.setDate(lwe.getDate()-1);
+  const mi = t.getFullYear()+'-'+pad(t.getMonth()+1)+'-01';
+  const all = state.entries.reduce((s,e)=>s+e.minutes,0);
+  const rows = [
+    ['Today', totalsBetween(ti,ti)],
+    ['This week', totalsBetween(wsi, iso(we))],
+    ['Last week', totalsBetween(iso(lws), iso(lwe))],
+    ['This month', totalsBetween(mi, ti)],
+    ['All time', all]
+  ];
+  $('statcards').innerHTML = rows.map(([l,m]) =>
+    '<div class="stat"><div class="lbl">'+l+'</div><div class="val">'+hrs(m)+'<span style="font-size:13px;font-weight:400;"> h</span></div>'
+    + '<div class="sub">'+fmtHM(m) + (money(m) ? ' · '+money(m) : '') + '</div></div>'
+  ).join('');
+}
+
+function groupLog(){
+  const weeks = new Map(); // wsISO -> Map(dateISO -> [entries])
+  for (const e of state.entries){
+    const w = iso(weekStartOf(fromISO(e.date), state.weekStart));
+    if (!weeks.has(w)) weeks.set(w, new Map());
+    const days = weeks.get(w);
+    if (!days.has(e.date)) days.set(e.date, []);
+    days.get(e.date).push(e);
+  }
+  return [...weeks.entries()].sort((a,b)=> b[0].localeCompare(a[0]));
+}
+
+function renderLog(){
+  const box = $('log');
+  if (!state.entries.length){
+    box.innerHTML = '<div class="empty-state">No entries yet. Type or paste something above — the first one takes 5 seconds. ⏱</div>';
+    return;
+  }
+  const weeks = groupLog();
+  if (expanded.size === 0 && weeks.length) expanded.add(weeks[0][0]); // newest week open by default
+  let h = '';
+  for (const [w, days] of weeks){
+    const wt = [...days.values()].flat().reduce((s,e)=>s+e.minutes,0);
+    const open = expanded.has(w);
+    h += '<div class="weekblock"><div class="weekhead" data-w="'+w+'">'
+      + '<span class="wl">'+(open?'▾ ':'▸ ')+fmtWeekLabel(w)+'</span>'
+      + '<span class="wt">'+fmtBoth(wt) + (money(wt)? ' · '+money(wt):'') +'</span></div>';
+    if (open){
+      h += '<div class="daysub"><table>';
+      const dayList = [...days.entries()].sort((a,b)=> b[0].localeCompare(a[0]));
+      for (const [d, ents] of dayList){
+        const dt = ents.reduce((s,e)=>s+e.minutes,0);
+        h += '<tr class="dayrow"><td>'+fmtDay(d)+'</td><td colspan="2"><b>'+fmtBoth(dt)+'</b></td><td class="rowbtns"></td></tr>';
+        for (const e of ents){
+          h += '<tr><td></td><td style="width:110px;">'+fmtHM(e.minutes)+'</td>'
+            + '<td class="entry-note" title="'+esc(e.source)+'">'+esc(e.note || e.source)+'</td>'
+            + '<td class="rowbtns">'
+            + '<button class="icon-btn" title="Edit" data-edit="'+e.id+'">✏️</button>'
+            + '<button class="icon-btn" title="Delete" data-del="'+e.id+'">🗑️</button>'
+            + '</td></tr>';
+        }
+      }
+      h += '</table></div>';
+    }
+    h += '</div>';
+  }
+  box.innerHTML = h;
+  box.querySelectorAll('.weekhead').forEach(el => el.onclick = () => {
+    const w = el.dataset.w;
+    expanded.has(w) ? expanded.delete(w) : expanded.add(w);
+    renderLog();
+  });
+  box.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+    const id = b.dataset.del;
+    const e = state.entries.find(x=>x.id===id);
+    if (!e) return;
+    state.entries = state.entries.filter(x=>x.id!==id);
+    save(); undoStack = {type:'delete', entry:e}; $('btn-undo').style.display='';
+    toast('Deleted — Undo available'); renderAll();
+  });
+  box.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => editEntry(b.dataset.edit));
+}
+
+function editEntry(id){
+  const e = state.entries.find(x=>x.id===id);
+  if (!e) return;
+  const nh = prompt('Hours for this entry (decimal — e.g. 0.75):', hrs(e.minutes));
+  if (nh === null) return;
+  const v = parseFloat(nh);
+  if (isNaN(v) || v <= 0 || v > 24){ toast('Not a valid number of hours'); return; }
+  const nd = prompt('Date (YYYY-MM-DD):', e.date);
+  if (nd === null) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(nd)){ toast('Date must be YYYY-MM-DD'); return; }
+  const nn = prompt('Note (shown in the log):', e.note || e.source);
+  e.minutes = Math.round(v*60); e.date = nd; if (nn !== null) e.note = nn;
+  save(); toast('Updated'); renderAll();
+}
+
+/* ============================ settings ============================ */
+$('weekstart').value = String(state.weekStart);
+$('weekstart').onchange = e => { state.weekStart = +e.target.value; save(); renderAll(); };
+$('rate').value = state.rate;
+$('rate').oninput = e => { state.rate = e.target.value; if($('iv-rate')) $('iv-rate').value = e.target.value; save(); renderAll(); };
+
+/* ============================ bi-weekly summary ============================ */
+let viewK = null;        // which 14-day period is showing (0 = the anchor period)
+let draftDirty = false;  // true once the user hand-edits the draft
+
+function anchorDate(){
+  const a = fromISO(state.summary.anchor || SUMMARY_DEFAULTS.anchor);
+  return isNaN(a) ? fromISO(SUMMARY_DEFAULTS.anchor) : a;
+}
+function periodStartFor(k){ const d = anchorDate(); d.setDate(d.getDate() + k*14); return d; }
+function defaultPeriodK(){ // latest period whose end date <= today (most recent COMPLETE period)
+  const daysSince = Math.floor((today() - anchorDate()) / 86400000);
+  return Math.floor((daysSince - 13) / 14);
+}
+function periodEntries(start, end){ const a = iso(start), b = iso(end); return state.entries.filter(e => e.date >= a && e.date <= b); }
+
+function rangeStr(a, b){
+  const sm = MONNAMES[a.getMonth()], em = MONNAMES[b.getMonth()];
+  if (a.getFullYear() !== b.getFullYear())
+    return sm+' '+a.getDate()+', '+a.getFullYear()+' – '+em+' '+b.getDate()+', '+b.getFullYear();
+  if (a.getMonth() !== b.getMonth())
+    return sm+' '+a.getDate()+' – '+em+' '+b.getDate()+', '+b.getFullYear();
+  return sm+' '+a.getDate()+'–'+b.getDate()+', '+b.getFullYear();
+}
+
+// strip the time/date tokens out of an entry so only the description remains
+function describe(e){
+  if (e.note && e.note.trim()) return e.note.trim();
+  let s = ' ' + (e.source || '') + ' ';
+  s = s.replace(/(\d{1,2}:\d{2}|\d{1,4})\s*(am|pm|a|p)?\s*(?:-|–|—|\bto\b)\s*(\d{1,2}:\d{2}|\d{1,4})\s*(am|pm|a|p)?/gi, ' ');
+  s = s.replace(/\b(half\s+an?\s+hour|an?\s+half\s+hour|quarter\s+(of\s+an?\s+)?hour|an?\s+hour\s+and\s+a\s+half|an?\s+hour\s+and\s+a\s+quarter)\b/gi, ' ');
+  s = s.replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|an|a)\s+(and\s+a\s+half\s+)?(hours?|hrs?|hr|minutes?|mins?|min)\b/gi, ' ');
+  s = s.replace(/\b\d*\.?\d+\s*(hours?|hrs?|hr|h|minutes?|mins?|min|m)\b/gi, ' ');
+  s = s.replace(/\bh(?:ou)?rs?\s*:/gi, ' ');                            // "Hrs:" logging marker
+  s = s.replace(/\b(on|at)\s+\d{1,2}\/\d{1,2}(\/\d{2,4})?\b/gi, ' ');   // "on 7/19"
+  s = s.replace(/\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b/g, ' ');              // bare M/D
+  s = s.replace(new RegExp('\\b(on|at)\\s+('+MONTH_RE+')\\.?\\s+\\d{1,2}(,?\\s+\\d{4})?\\b','gi'), ' ');
+  s = s.replace(new RegExp('\\b('+MONTH_RE+')\\.?\\s+\\d{1,2}(,?\\s+\\d{4})?\\b','gi'), ' ');
+  s = s.replace(/\b(on|at)\s+(yesterday|today)\b/gi, ' ');
+  s = s.replace(/\b(yesterday|today)\b/gi, ' ');
+  s = s.replace(/\b(mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(day)?\b/gi, ' ');
+  s = s.replace(/^\s*\.?\d{1,2}(?:\.\d{1,2})?(?=\s|$)/, ' ');           // bare leading number logged as hours
+  s = s.replace(/\bplus\b/gi, ' ');
+  s = s.replace(/\s+/g, ' ').replace(/^[\s,\-–:;.]+|[\s,\-–:;.]+$/g, '').trim();
+  return s;
+}
+
+function buildSummary(){
+  const start = periodStartFor(viewK), end = new Date(start); end.setDate(end.getDate()+13);
+  const total = periodEntries(start, end).reduce((s,e)=>s+e.minutes,0);
+  const S = state.summary;
+  let body = S.greeting + '\n\n' + S.intro + '\n\n';
+  body += 'Total: ' + hrs(total) + ' hrs for ' + rangeStr(start, end) + '.' + (money(total)? '  ('+money(total)+')':'') + '\n';
+  for (let w=0; w<2; w++){
+    const ws = new Date(start); ws.setDate(ws.getDate() + w*7);
+    const we = new Date(ws);    we.setDate(we.getDate() + 6);
+    const wents = periodEntries(ws, we);
+    if (!wents.length) continue;
+    const wt = wents.reduce((a,e)=>a+e.minutes,0);
+    body += '\n' + rangeStr(ws, we) + ' — ' + hrs(wt) + ' hrs\n';
+    const byday = {};
+    for (const e of wents){ (byday[e.date] = byday[e.date] || []).push(e); }
+    for (const d of Object.keys(byday).sort()){
+      const dents = byday[d], dt = dents.reduce((a,e)=>a+e.minutes,0);
+      const descs = dents.map(describe).filter(Boolean);
+      body += '  • ' + fmtDay(d) + ' — ' + hrs(dt) + ' hrs' + (descs.length ? ': ' + descs.join(', ') : '') + '\n';
+    }
+  }
+  body += '\n' + S.closing + '\n\n' + S.signature + '\n';
+  return { body, total, start, end };
+}
+
+function currentSubject(){
+  const start = periodStartFor(viewK), end = new Date(start); end.setDate(end.getDate()+13);
+  const tot = hrs(periodEntries(start, end).reduce((a,e)=>a+e.minutes,0));
+  return (state.summary.subjectTpl||'').replace(/\{range\}/g, rangeStr(start,end)).replace(/\{total\}/g, tot);
+}
+
+function updateSumLabel(){
+  const start = periodStartFor(viewK), end = new Date(start); end.setDate(end.getDate()+13);
+  $('sum-range').textContent = rangeStr(start, end);
+  const tot = periodEntries(start, end).reduce((a,e)=>a+e.minutes,0);
+  $('sum-total').textContent = hrs(tot) + ' hrs' + (money(tot)? ' · '+money(tot):'');
+  const dk = defaultPeriodK();
+  $('sum-status').textContent = viewK === dk ? 'most recent complete period' : (viewK > dk ? 'in progress / upcoming' : 'earlier period');
+}
+function rebuildDraft(){ $('sum-draft').value = buildSummary().body; draftDirty = false; $('sum-stale').style.display = 'none'; }
+function renderSummaryAll(){
+  if (viewK === null) viewK = defaultPeriodK();
+  updateSumLabel();
+  if (!draftDirty) rebuildDraft();
+  else $('sum-stale').style.display = '';
+}
+
+// wiring
+$('sum-prev').onclick = () => { viewK--; draftDirty = false; updateSumLabel(); rebuildDraft(); };
+$('sum-next').onclick = () => { viewK++; draftDirty = false; updateSumLabel(); rebuildDraft(); };
+$('sum-rebuild').onclick = () => { rebuildDraft(); toast('Draft rebuilt from your logged entries'); };
+$('sum-copy').onclick = () => navigator.clipboard.writeText($('sum-draft').value).then(()=>toast('Summary copied — paste into your email'));
+$('sum-email').onclick = () => {
+  const url = 'mailto:' + encodeURIComponent(state.summary.to||'')
+    + '?subject=' + encodeURIComponent(currentSubject())
+    + '&body=' + encodeURIComponent($('sum-draft').value);
+  if (url.length > 1900) toast('Long draft — if your email opens blank, use Copy instead');
+  window.location.href = url;
+};
+$('sum-draft').addEventListener('input', () => { draftDirty = true; });
+
+(function initSumFields(){
+  const S = state.summary;
+  $('sf-to').value = S.to; $('sf-subject').value = S.subjectTpl; $('sf-greeting').value = S.greeting;
+  $('sf-closing').value = S.closing; $('sf-intro').value = S.intro; $('sf-signature').value = S.signature;
+  $('sf-anchor').value = S.anchor;
+  const bind = (id, key, isAnchor) => $(id).addEventListener('input', e => {
+    state.summary[key] = e.target.value; save();
+    if (isAnchor) viewK = defaultPeriodK();
+    updateSumLabel(); rebuildDraft();
+  });
+  bind('sf-to','to'); bind('sf-subject','subjectTpl'); bind('sf-greeting','greeting');
+  bind('sf-closing','closing'); bind('sf-intro','intro'); bind('sf-signature','signature');
+  bind('sf-anchor','anchor', true);
+})();
+
+/* ============================ invoice ============================ */
+const INVOICE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@400;500&display=swap');"
++ ".inv{--navy:#1B2A41;--slate:#5A6A80;--paper:#F7F5F0;--rule:#D9D5CC;--oxblood:#8B2635;"
++ "background:var(--paper);color:var(--navy);font-family:'Source Serif 4',Georgia,serif;max-width:760px;margin:0 auto;padding:46px 50px;border:1px solid var(--rule);}"
++ ".inv *{box-sizing:border-box;}"
++ ".inv-head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid var(--navy);padding-bottom:22px;margin-bottom:24px;}"
++ ".inv-word{font-family:'Cormorant Garamond',Georgia,serif;font-size:42px;font-weight:600;letter-spacing:.5px;line-height:1;color:var(--navy);}"
++ ".inv-word .tag{display:block;font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--slate);margin-top:9px;font-weight:400;}"
++ ".inv-headR{text-align:right;}"
++ ".inv-headR h1{font-family:'Cormorant Garamond',Georgia,serif;font-weight:600;font-size:34px;letter-spacing:4px;margin:0;color:var(--navy);}"
++ ".inv-meta{font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--slate);line-height:1.95;margin-top:8px;}"
++ ".inv-meta b{color:var(--navy);font-weight:500;}"
++ ".inv-parties{display:flex;justify-content:space-between;gap:30px;margin-bottom:22px;}"
++ ".inv-lbl{font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--slate);margin-bottom:6px;}"
++ ".inv-val{font-size:14px;line-height:1.5;white-space:pre-line;}"
++ ".inv-val .nm{font-weight:600;font-size:15px;}"
++ ".inv-period{margin-bottom:8px;}"
++ "table.inv-lines{width:100%;border-collapse:collapse;margin-bottom:22px;font-variant-numeric:tabular-nums;}"
++ "table.inv-lines th{font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--slate);text-align:left;padding:0 10px 8px;border-bottom:1px solid var(--navy);font-weight:500;}"
++ "table.inv-lines th.num,table.inv-lines td.num{text-align:right;}"
++ "table.inv-lines td{font-size:13.5px;padding:10px;border-bottom:1px solid var(--rule);vertical-align:top;}"
++ "table.inv-lines td.dt{color:var(--slate);white-space:nowrap;}"
++ ".inv-botrow{display:flex;justify-content:space-between;gap:40px;flex-wrap:wrap;}"
++ ".inv-remit{flex:1;min-width:240px;}"
++ ".inv-remit .line{display:flex;justify-content:space-between;gap:14px;max-width:300px;padding:4px 0;border-bottom:1px dotted var(--rule);}"
++ ".inv-remit .line .k{color:var(--slate);font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.5px;text-transform:uppercase;}"
++ ".inv-remit .line .v{font-size:12.5px;font-variant-numeric:tabular-nums;}"
++ ".inv-tot{width:280px;font-variant-numeric:tabular-nums;}"
++ ".inv-tot .row{display:flex;justify-content:space-between;font-size:13.5px;padding:6px 0;}"
++ ".inv-tot .row.sub{border-bottom:1px solid var(--rule);}"
++ ".inv-tot .row.grand{border-top:2px solid var(--navy);margin-top:6px;padding-top:12px;font-family:'Cormorant Garamond',Georgia,serif;font-size:23px;font-weight:700;align-items:baseline;}"
++ ".inv-tot .row.grand .amt{color:var(--oxblood);}"
++ ".inv-thanks{margin-top:28px;padding-top:16px;border-top:1px solid var(--rule);font-style:italic;font-size:13px;color:var(--slate);white-space:pre-line;}";
+(function injectInvoiceCss(){ const st = document.createElement('style'); st.textContent = INVOICE_CSS; document.head.appendChild(st); })();
+
+function usd(a){ return '$' + a.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function dueDate(from, terms){ const n = parseInt(String(terms||'').replace(/\D/g,''),10) || 0; const d = new Date(from); d.setDate(d.getDate()+n); return d; }
+function longDate(d){ return MONNAMES[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear(); }
+
+function invoiceLines(){
+  const start = periodStartFor(viewK), end = new Date(start); end.setDate(end.getDate()+13);
+  const ents = periodEntries(start, end);
+  const lines = [];
+  if (state.invoice.groupBy === 'entry'){
+    for (const e of [...ents].sort((a,b)=>a.date.localeCompare(b.date)))
+      lines.push({ date: fmtDay(e.date), desc: describe(e) || state.invoice.serviceDesc, hours: hrs(e.minutes) });
+  } else {
+    const byday = {};
+    for (const e of ents){ (byday[e.date] = byday[e.date] || []).push(e); }
+    for (const d of Object.keys(byday).sort()){
+      const de = byday[d], descs = de.map(describe).filter(Boolean);
+      lines.push({ date: fmtDay(d), desc: descs.join('; ') || state.invoice.serviceDesc, hours: hrs(de.reduce((a,e)=>a+e.minutes,0)) });
+    }
+  }
+  return { lines, start, end, totalHours: hrs(ents.reduce((a,e)=>a+e.minutes,0)) };
+}
+
+function buildInvoiceHtml(){
+  const iv = state.invoice, rate = parseFloat(state.rate) || 0;
+  const { lines, start, end, totalHours } = invoiceLines();
+  const invDate = today(), due = dueDate(invDate, iv.terms);
+  let rows = lines.map(l =>
+    '<tr><td class="dt">'+esc(l.date)+'</td><td>'+esc(l.desc)+'</td>'
+    +'<td class="num">'+l.hours+'</td>'
+    +'<td class="num">'+(rate?usd(rate):'—')+'</td>'
+    +'<td class="num">'+(rate?usd(Math.round(l.hours*rate*100)/100):'—')+'</td></tr>').join('');
+  if (!lines.length) rows = '<tr><td colspan="5" style="text-align:center;color:var(--slate);padding:22px;font-style:italic;">No hours logged in this period.</td></tr>';
+  const totalAmt = Math.round(totalHours*rate*100)/100;
+  const remit = [['Beneficiary',iv.remitBeneficiary],['Bank',iv.remitBank],['Routing',iv.remitRouting],['Account',iv.remitAccount]]
+    .filter(r=>r[1]).map(r=>'<div class="line"><span class="k">'+esc(r[0])+'</span><span class="v">'+esc(r[1])+'</span></div>').join('');
+  return ''
+    +'<div class="inv">'
+    +'<div class="inv-head"><div class="inv-word">'+esc(iv.bizName)+(iv.serviceDesc?'<span class="tag">'+esc(iv.serviceDesc)+'</span>':'')+'</div>'
+    +'<div class="inv-headR"><h1>INVOICE</h1><div class="inv-meta"><b>No.</b> '+esc(iv.number)+'<br><b>Date</b> '+longDate(invDate)+'<br><b>Terms</b> '+esc(iv.terms)+'<br><b>Due</b> '+longDate(due)+'</div></div></div>'
+    +'<div class="inv-parties"><div><div class="inv-lbl">From</div><div class="inv-val"><span class="nm">'+esc(iv.bizName)+'</span>\n'+esc(iv.bizAddr)+'\n'+esc(iv.bizContact)+'</div></div>'
+    +'<div style="text-align:right;"><div class="inv-lbl">Bill To</div><div class="inv-val"><span class="nm">'+esc(iv.clientName)+'</span>\n'+esc(iv.clientAddr)+'</div></div></div>'
+    +'<div class="inv-lbl inv-period">Service Period · '+rangeStr(start,end)+'</div>'
+    +'<table class="inv-lines"><tr><th>Date</th><th>Description</th><th class="num">Hours</th><th class="num">Rate</th><th class="num">Amount</th></tr>'+rows+'</table>'
+    +'<div class="inv-botrow"><div class="inv-remit"><div class="inv-lbl">Remit Payment · ACH / Wire</div>'+(remit||'<div style="color:var(--slate);font-size:12px;">Add bank details in invoice settings.</div>')+'</div>'
+    +'<div class="inv-tot"><div class="row sub"><span>Total hours</span><span>'+totalHours+'</span></div>'
+    +'<div class="row"><span>Rate</span><span>'+(rate?usd(rate)+' / hr':'—')+'</span></div>'
+    +'<div class="row grand"><span>Total</span><span class="amt">'+(rate?usd(totalAmt):'set rate')+'</span></div></div></div>'
+    +(iv.notes?'<div class="inv-thanks">'+esc(iv.notes)+'</div>':'')
+    +'</div>';
+}
+
+function invoiceText(){
+  const iv = state.invoice, rate = parseFloat(state.rate) || 0;
+  const { lines, start, end, totalHours } = invoiceLines();
+  const invDate = today(), due = dueDate(invDate, iv.terms);
+  let t = iv.bizName.toUpperCase() + ' — INVOICE #' + iv.number + '\n';
+  t += (iv.serviceDesc?iv.serviceDesc+'\n':'') + iv.bizAddr.replace(/\n/g,', ') + ' · ' + iv.bizContact + '\n';
+  t += 'Date: ' + longDate(invDate) + '   Terms: ' + iv.terms + '   Due: ' + longDate(due) + '\n\n';
+  t += 'Bill To: ' + iv.clientName + ', ' + iv.clientAddr.replace(/\n/g,', ') + '\n';
+  t += 'Service Period: ' + rangeStr(start,end) + '\n\n';
+  for (const l of lines) t += '  ' + l.date + '  —  ' + l.desc + '  —  ' + l.hours + ' hrs' + (rate?'  —  '+usd(Math.round(l.hours*rate*100)/100):'') + '\n';
+  t += '\nTotal hours: ' + totalHours + (rate ? '\nTotal due: ' + usd(Math.round(totalHours*rate*100)/100) : '') + '\n';
+  if (iv.remitBeneficiary) t += '\nRemit (ACH/Wire): ' + iv.remitBeneficiary + ' · ' + iv.remitBank + ' · Routing ' + iv.remitRouting + ' · Acct ' + iv.remitAccount + '\n';
+  if (iv.notes) t += '\n' + iv.notes + '\n';
+  return t;
+}
+
+function renderInvoice(){
+  $('inv-period').textContent = rangeStr(periodStartFor(viewK), (function(){const d=periodStartFor(viewK); d.setDate(d.getDate()+13); return d;})());
+  $('invoice-preview').innerHTML = buildInvoiceHtml();
+}
+
+function printInvoice(){
+  const ifr = document.createElement('iframe');
+  ifr.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+  document.body.appendChild(ifr);
+  const d = ifr.contentWindow.document;
+  d.open();
+  d.write('<!doctype html><html><head><meta charset="utf-8"><title>Invoice ' + esc(state.invoice.number) + '</title><style>@page{margin:12mm;} body{margin:0;background:#F7F5F0;} ' + INVOICE_CSS + ' .inv{border:none;max-width:none;padding:0;}</style></head><body>' + buildInvoiceHtml() + '</body></html>');
+  d.close();
+  ifr.contentWindow.focus();
+  setTimeout(() => { try{ ifr.contentWindow.print(); }catch(e){} setTimeout(()=>ifr.remove(), 1500); }, 400);
+}
+
+// wiring
+$('inv-print').onclick = printInvoice;
+$('inv-copy').onclick = () => navigator.clipboard.writeText(invoiceText()).then(()=>toast('Invoice copied as text'));
+$('inv-refresh').onclick = () => { renderInvoice(); toast('Invoice refreshed'); };
+$('inv-groupby').value = state.invoice.groupBy;
+$('inv-groupby').onchange = e => { state.invoice.groupBy = e.target.value; save(); renderInvoice(); };
+
+(function initInvFields(){
+  const iv = state.invoice, map = {
+    'iv-bizName':'bizName','iv-number':'number','iv-bizAddr':'bizAddr','iv-bizContact':'bizContact',
+    'iv-serviceDesc':'serviceDesc','iv-clientName':'clientName','iv-clientAddr':'clientAddr','iv-terms':'terms',
+    'iv-remitBeneficiary':'remitBeneficiary','iv-remitBank':'remitBank','iv-remitRouting':'remitRouting','iv-remitAccount':'remitAccount','iv-notes':'notes'
+  };
+  for (const id in map){ $(id).value = iv[map[id]] || ''; $(id).addEventListener('input', e => { state.invoice[map[id]] = e.target.value; save(); renderInvoice(); }); }
+  $('iv-rate').value = state.rate;
+  $('iv-rate').addEventListener('input', e => { state.rate = e.target.value; if($('rate')) $('rate').value = e.target.value; save(); renderStats(); updateSumLabel(); if(!draftDirty) rebuildDraft(); renderInvoice(); });
+})();
+
+/* ============================ export ============================ */
+$('btn-copy').onclick = () => {
+  let txt = 'HOURS SUMMARY — generated ' + new Date().toLocaleDateString() + '\n';
+  for (const [w, days] of groupLog()){
+    const wt = [...days.values()].flat().reduce((s,e)=>s+e.minutes,0);
+    txt += '\n' + fmtWeekLabel(w) + ': ' + hrs(wt) + ' h' + (money(wt) ? ' ('+money(wt)+')' : '') + '\n';
+    for (const [d, ents] of [...days.entries()].sort((a,b)=>a[0].localeCompare(b[0]))){
+      const dt = ents.reduce((s,e)=>s+e.minutes,0);
+      txt += '  ' + fmtDay(d) + ': ' + hrs(dt) + ' h\n';
+    }
+  }
+  navigator.clipboard.writeText(txt).then(()=>toast('Summary copied — paste anywhere'));
+};
+$('btn-csv').onclick = () => {
+  let csv = 'Date,Hours,Minutes,Note,Source\n';
+  for (const e of [...state.entries].sort((a,b)=>a.date.localeCompare(b.date)))
+    csv += e.date + ',' + hrs(e.minutes) + ',' + e.minutes + ',"' + (e.note||'').replace(/"/g,'""') + '","' + e.source.replace(/"/g,'""') + '"\n';
+  dl(csv, 'hours_' + iso(today()) + '.csv', 'text/csv');
+};
+$('btn-backup').onclick = () => dl(JSON.stringify(state, null, 1), 'hours_backup_' + iso(today()) + '.json', 'application/json');
+$('btn-restore').onclick = () => $('restorefile').click();
+$('restorefile').onchange = ev => {
+  const f = ev.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try{
+      const s = JSON.parse(r.result);
+      if (!s || !Array.isArray(s.entries)) throw 0;
+      if (!confirm('Replace current data ('+state.entries.length+' entries) with backup ('+s.entries.length+' entries)?')) return;
+      state = { entries: s.entries, weekStart: s.weekStart ?? 1, rate: s.rate ?? '' };
+      save(); $('weekstart').value = String(state.weekStart); $('rate').value = state.rate;
+      toast('Restored'); renderAll();
+    }catch(e){ toast('That file doesn’t look like a Hours Tracker backup'); }
+  };
+  r.readAsText(f); ev.target.value = '';
+};
+$('btn-import').onclick = () => $('importfile').click();
+$('importfile').onchange = ev => {
+  const f = ev.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try{
+      const j = JSON.parse(r.result);
+      const list = Array.isArray(j) ? j : (Array.isArray(j.entries) ? j.entries : null);
+      if (!list) throw 0;
+      let added = 0, skippedDup = 0, bad = 0;
+      for (const e of list){
+        const date = e.date, minutes = Math.round(+e.minutes || (+e.hours * 60) || 0);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '') || minutes <= 0 || minutes > 24*60){ bad++; continue; }
+        const source = String(e.source || e.note || 'imported');
+        if (state.entries.some(x => x.date === date && x.minutes === minutes && x.source.toLowerCase() === source.toLowerCase())){ skippedDup++; continue; }
+        state.entries.push({ id: 'e' + Date.now() + Math.random().toString(36).slice(2,7), date, minutes, source, note: e.note || '' });
+        added++;
+      }
+      save(); renderAll();
+      toast('Imported ' + added + ' new · skipped ' + skippedDup + ' duplicate' + (skippedDup===1?'':'s') + (bad ? ' · ' + bad + ' unreadable' : ''));
+    }catch(err){ toast('That file doesn’t look like an entries JSON'); }
+  };
+  r.readAsText(f); ev.target.value = '';
+};
+$('btn-wipe').onclick = () => {
+  if (!state.entries.length){ toast('Nothing to clear'); return; }
+  if (!confirm('Delete ALL ' + state.entries.length + ' entries? Consider a Backup JSON first.')) return;
+  if (!confirm('Really sure? This cannot be undone.')) return;
+  state.entries = []; save(); renderAll(); toast('All data cleared');
+};
+
+function dl(content, name, type){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([content], {type}));
+  a.download = name; a.click(); URL.revokeObjectURL(a.href);
+}
+
+let toastT = null;
+function toast(msg){
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastT); toastT = setTimeout(()=>t.classList.remove('show'), 2400);
+}
+
+/* ============================ self-tests (console) ============================ */
+window.__runTests = function(){
+  const t = [], eq = (name, got, want) => t.push({name, got, want, ok: got === want});
+  eq('.5 hrs', findDuration('.5 hrs 7/19'), 30);
+  eq('.7 hrs', findDuration('.7 hrs on 7/19'), 42);
+  eq('40 mins', findDuration('40 mins 730 - 810'), 40);
+  eq('plus one hour', findDuration('Plus one hour'), 60);
+  eq('hour and a half', findDuration('an hour and a half'), 90);
+  eq('1 hr 20 min', findDuration('1 hr 20 min'), 80);
+  eq('half an hour', findDuration('half an hour this morning'), 30);
+  eq('range 730-810', findRange('730 - 810').minutes, 40);
+  eq('range 4:30-5', findRange('4:30-5 on 7/20').minutes, 30);
+  eq('range 11-1', findRange('11-1').minutes, 120);
+  eq('phone not range', findRange('555-123-4567'), null);
+  eq('date 7/19', iso(findInlineDate('.5 hrs 7/19', null)), new Date().getFullYear()+'-07-19');
+  eq('header date', iso(findHeaderDate('Chuck Amos <c@x.com> Fri, Jul 17, 2026 at 8:09 AM')), '2026-07-17');
+  // summary helpers
+  eq('describe strips dur', describe({source:'.5 hrs mid week check in and updates', note:''}), 'mid week check in and updates');
+  eq('describe range only', describe({source:'40 mins 730 - 810', note:''}), '');
+  eq('describe word dur', describe({source:'Plus one hour', note:''}), '');
+  eq('describe strips weekday', describe({source:'2 hrs Friday working board deck info', note:''}), 'working board deck info');
+  eq('describe keeps mid-sentence on', describe({source:'2 hrs monday follow up on HC approval tool', note:''}), 'follow up on HC approval tool');
+  eq('describe uses note', describe({source:'x', note:'comp tool updates'}), 'comp tool updates');
+  eq('rangeStr same month', rangeStr(fromISO('2026-07-05'), fromISO('2026-07-18')), 'Jul 5–18, 2026');
+  eq('rangeStr cross month', rangeStr(fromISO('2026-06-28'), fromISO('2026-07-11')), 'Jun 28 – Jul 11, 2026');
+  // "Hrs:" bare-number convention
+  eq('bare hrs .5', findBareHours('Hrs: .5 7/20'), 30);
+  eq('bare hrs 2', findBareHours('Hrs: 2 7/21'), 120);
+  eq('bare hrs 1.5', findBareHours('hrs: 1.5 mon'), 90);
+  eq('bare hrs skips date-only', findBareHours('Hrs: 7/19'), null);
+  eq('bare hrs no marker', findBareHours('.5 7/20'), null);
+  eq('parseBatch bare .5', (function(){ const r=parseBatch('Hrs: .5 7/20'); return r.entries.length===1 && r.entries[0].minutes; })(), 30);
+  eq('parseBatch Hrs range still works', (function(){ const r=parseBatch('Hrs: 915-10 on 7/20'); return r.entries.length===1 && r.entries[0].minutes; })(), 45);
+  eq('describe strips Hrs marker+num', describe({source:'Hrs: .5 7/20', note:''}), '');
+  eq('describe keeps desc after Hrs num', describe({source:'Hrs: 2 7/21 board deck', note:''}), 'board deck');
+  // buildSummary (deterministic on anchor + viewK + entries)
+  const _e=state.entries, _v=viewK, _a=state.summary.anchor;
+  state.summary.anchor='2026-07-05'; viewK=0;
+  state.entries=[{id:'a',date:'2026-07-06',minutes:120,source:'2 hrs monday meeting and follow up on HC approval tool',note:''},
+                 {id:'b',date:'2026-07-15',minutes:30,source:'.5 hrs mid week check in',note:''},
+                 {id:'c',date:'2026-07-17',minutes:120,source:'2 hrs board deck info',note:''}];
+  const bs=buildSummary();
+  eq('summary total', bs.total, 270);
+  eq('summary wk1 line', bs.body.includes('Jul 5–11, 2026 — 2 hrs'), true);
+  eq('summary wk2 line', bs.body.includes('Jul 12–18, 2026 — 2.5 hrs'), true);
+  eq('summary day desc', bs.body.includes('mid week check in'), true);
+  eq('summary strips weekday in desc', bs.body.includes('meeting and follow up on HC approval tool'), true);
+  // invoice
+  const _r=state.rate, _g=state.invoice.groupBy;
+  state.summary.anchor='2026-07-05'; viewK=0; state.rate='100'; state.invoice.groupBy='day';
+  state.entries=[{id:'a',date:'2026-07-06',minutes:120,source:'2 hrs comp tool',note:''},
+                 {id:'b',date:'2026-07-06',minutes:60,source:'1 hr more comp tool',note:''},
+                 {id:'c',date:'2026-07-15',minutes:30,source:'.5 hrs check in',note:''}];
+  const il=invoiceLines();
+  eq('invoice day-group lines', il.lines.length, 2);          // 7/6 merged, 7/15
+  eq('invoice day total hrs', il.lines[0].hours, 3);          // 2+1 on 7/6
+  eq('invoice grand hours', il.totalHours, 3.5);
+  const _rr=state.invoice.remitRouting; state.invoice.remitRouting='RT-TESTVAL';
+  const ih=buildInvoiceHtml();
+  eq('invoice shows amount', ih.includes('$350.00'), true);   // 3.5h * $100
+  eq('invoice has wordmark', ih.includes('Polymetis'), true);
+  eq('invoice remit routing', ih.includes('RT-TESTVAL'), true);
+  state.invoice.remitRouting=_rr;
+  state.invoice.groupBy='entry';
+  eq('invoice entry-group lines', invoiceLines().lines.length, 3);
+  state.entries=_e; viewK=_v; state.summary.anchor=_a; state.rate=_r; state.invoice.groupBy=_g;
+  return t;
+};
+
+renderAll();
+</script>
+</body>
+</html>
