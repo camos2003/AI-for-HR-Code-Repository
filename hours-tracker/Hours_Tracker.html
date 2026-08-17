@@ -413,7 +413,8 @@ function findRange(line){
 // "Hrs:" convention — a bare number right after the marker means hours (e.g. "Hrs: .5 7/20" → 30 min).
 // Only used when no explicit duration/range is found. Skips date/time-shaped tokens (7/20, 9:15).
 function findBareHours(line){
-  const m = line.match(/\bh(?:ou)?rs?\s*:/i);
+  // marker = "Hrs:" anywhere, or a bare "Hrs" at the very start of the line (colon optional)
+  const m = line.match(/(^\s*h(?:ou)?rs?\b\s*:?|\bh(?:ou)?rs?\s*:)/i);
   if (!m) return null;
   const rest = line.slice(m.index + m[0].length);
   for (const tok of rest.split(/\s+/)){
@@ -730,14 +731,15 @@ function describe(e){
   s = s.replace(/\b(half\s+an?\s+hour|an?\s+half\s+hour|quarter\s+(of\s+an?\s+)?hour|an?\s+hour\s+and\s+a\s+half|an?\s+hour\s+and\s+a\s+quarter)\b/gi, ' ');
   s = s.replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|an|a)\s+(and\s+a\s+half\s+)?(hours?|hrs?|hr|minutes?|mins?|min)\b/gi, ' ');
   s = s.replace(/\b\d*\.?\d+\s*(hours?|hrs?|hr|h|minutes?|mins?|min|m)\b/gi, ' ');
-  s = s.replace(/\bh(?:ou)?rs?\s*:/gi, ' ');                            // "Hrs:" logging marker
-  s = s.replace(/\b(on|at)\s+\d{1,2}\/\d{1,2}(\/\d{2,4})?\b/gi, ' ');   // "on 7/19"
+  s = s.replace(/(^\s*h(?:ou)?rs?\b\s*:?|\bh(?:ou)?rs?\s*:)/gi, ' ');   // "Hrs:" marker, or bare leading "Hrs"
+  s = s.replace(/\b(on|at|of)\s+\d{1,2}\/\d{1,2}(\/\d{2,4})?\b/gi, ' '); // "on 7/19", "morning of 8/5"
   s = s.replace(/\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b/g, ' ');              // bare M/D
   s = s.replace(new RegExp('\\b(on|at)\\s+('+MONTH_RE+')\\.?\\s+\\d{1,2}(,?\\s+\\d{4})?\\b','gi'), ' ');
   s = s.replace(new RegExp('\\b('+MONTH_RE+')\\.?\\s+\\d{1,2}(,?\\s+\\d{4})?\\b','gi'), ' ');
   s = s.replace(/\b(on|at)\s+(yesterday|today)\b/gi, ' ');
   s = s.replace(/\b(yesterday|today)\b/gi, ' ');
   s = s.replace(/\b(mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(day)?\b/gi, ' ');
+  s = s.replace(/\b(morning|afternoon|evening|tonight|a\.?m\.?|p\.?m\.?)\b/gi, ' ');   // time-of-day words ("30 mins AM", "afternoon")
   s = s.replace(/^\s*\.?\d{1,2}(?:\.\d{1,2})?(?=\s|$)/, ' ');           // bare leading number logged as hours
   s = s.replace(/\bplus\b/gi, ' ');
   s = s.replace(/[\(\[]\s*[\)\]]/g, ' ');                               // empty brackets left after stripping a time/date inside them
@@ -1088,6 +1090,12 @@ window.__runTests = function(){
     if (realOK){ const w = document.getElementById('storage-warn'); if (w) w.remove(); }
   })();
   eq('lsGet survives blocked storage', (function(){ const r=Storage.prototype.getItem, ok=storageOK; Storage.prototype.getItem=function(){throw new Error('x');}; let v; try{ v=lsGet('k'); }catch(e){ v='THREW'; } Storage.prototype.getItem=r; storageOK=ok; return v; })(), null);
+  // "Hrs" without a colon (Chuck's Aug emails) + time-of-day words
+  eq('bare hrs no colon', findBareHours('Hrs .5 morning of 8/5/26'), 30);
+  eq('parseBatch no-colon Hrs', (function(){ const r=parseBatch('Hrs .5 8/6. AI projects communication'); return r.entries.length===1 ? r.entries[0].date+'|'+r.entries[0].minutes : 'FAIL'; })(), '2026-08-06|30');
+  eq('describe no-colon marker+morning of', describe({source:'Hrs .5 morning of 8/5/26', note:''}), '');
+  eq('describe no-colon keeps desc', describe({source:'Hrs .5 8/6. AI projects communication and activities', note:''}), 'AI projects communication and activities');
+  eq('describe strips AM', describe({source:'Hrs: 30 mins AM 8/7/26 - EAF tool', note:''}), 'EAF tool');
   eq('describe strips empty parens', describe({source:'Hrs: 915-10 on 7/20 (9:15-10:00)', note:''}), '');
   eq('describe keeps text w/ paren time', describe({source:'meeting (2-3pm)', note:''}), 'meeting');
   // buildSummary (deterministic on anchor + viewK + entries)
