@@ -171,6 +171,7 @@
 
   <div class="card">
     <h2>🧾 Invoice <span style="font-weight:400;font-size:12px;color:var(--ink-soft);">(same period as the summary above — <span id="inv-period">—</span>)</span></h2>
+    <div id="inv-status" class="no-print" style="font-size:12.5px;color:var(--ink-soft);margin:-4px 0 8px;"></div>
     <div class="btnrow no-print">
       <button class="btn btn-primary" id="inv-print">🖨 Print / Save PDF</button>
       <button class="btn btn-ghost" id="inv-copy">📋 Copy as text</button>
@@ -186,7 +187,14 @@
       <summary style="cursor:pointer; font-size:13px; color:var(--accent);">✏️ Edit invoice details (business, client, rate, bank remit)</summary>
       <div class="sumfields">
         <label>Your business name <input type="text" id="iv-bizName"></label>
-        <label>Invoice # <input type="text" id="iv-number"></label>
+        <label>Invoice numbering
+          <select id="iv-autoNumber">
+            <option value="1">Auto-increment (recommended)</option>
+            <option value="0">Manual</option>
+          </select>
+        </label>
+        <label id="iv-seq-wrap">Next invoice # <input type="number" id="iv-seq" min="1" step="1"></label>
+        <label id="iv-number-wrap">Invoice # (manual) <input type="text" id="iv-number"></label>
         <label class="full">Your address <textarea id="iv-bizAddr" rows="2"></textarea></label>
         <label>Your phone / contact <input type="text" id="iv-bizContact"></label>
         <label>Service line (subtitle) <input type="text" id="iv-serviceDesc"></label>
@@ -250,7 +258,10 @@ const INVOICE_DEFAULTS = {
   serviceDesc: 'AI & People Analytics Consulting',
   clientName: 'Client Name',
   clientAddr: 'Client Street\nCity, ST ZIP',
-  number: '1001',
+  number: '1001',        // used in Manual numbering mode
+  autoNumber: true,      // Auto: next number = seq; first Print/PDF for a period "issues" it and bumps seq
+  seq: 1001,             // next invoice number (Auto mode)
+  issued: {},            // periodStartISO -> { number, date }  (so reprints reuse the same # and date)
   terms: 'Net 15',
   remitBeneficiary: 'Your Name',
   remitBank: 'Your Bank',
@@ -881,10 +892,39 @@ function invoiceLines(){
   return { lines, start, end, totalHours: hrs(ents.reduce((a,e)=>a+e.minutes,0)) };
 }
 
+/* ---- invoice numbering (Auto = sequential, issued per period; Manual = free text) ---- */
+function currentPeriodKey(){ return iso(periodStartFor(viewK)); }
+function invoiceNumberFor(){
+  const iv = state.invoice;
+  if (!iv.autoNumber) return { number: String(iv.number || ''), date: today(), issued: false };
+  const rec = (iv.issued || {})[currentPeriodKey()];
+  if (rec) return { number: String(rec.number), date: fromISO(rec.date), issued: true };
+  return { number: String(iv.seq), date: today(), issued: false };
+}
+function markIssued(){   // first Print/PDF of a period locks its number + date and bumps the counter
+  const iv = state.invoice;
+  if (!iv.autoNumber) return null;
+  const k = currentPeriodKey(); iv.issued = iv.issued || {};
+  if (iv.issued[k]) return { rec: iv.issued[k], isNew: false };
+  const n = parseInt(iv.seq, 10) || 1001;
+  iv.issued[k] = { number: n, date: iso(today()) };
+  iv.seq = n + 1;
+  save();
+  return { rec: iv.issued[k], isNew: true };
+}
+function unissue(){      // escape hatch: release this period's number (rolls the counter back if it was the last one)
+  const iv = state.invoice, k = currentPeriodKey();
+  if (!iv.issued || !iv.issued[k]) return false;
+  const rec = iv.issued[k]; delete iv.issued[k];
+  if ((parseInt(iv.seq, 10) || 0) === rec.number + 1) iv.seq = rec.number;
+  save(); return true;
+}
+
 function buildInvoiceHtml(){
   const iv = state.invoice, rate = parseFloat(state.rate) || 0;
   const { lines, start, end, totalHours } = invoiceLines();
-  const invDate = today(), due = dueDate(invDate, iv.terms);
+  const numInfo = invoiceNumberFor();
+  const invDate = numInfo.date, due = dueDate(invDate, iv.terms);
   let rows = lines.map(l =>
     '<tr><td class="dt">'+esc(l.date)+'</td><td>'+esc(l.desc)+'</td>'
     +'<td class="num">'+l.hours+'</td>'
@@ -897,7 +937,7 @@ function buildInvoiceHtml(){
   return ''
     +'<div class="inv">'
     +'<div class="inv-head"><div class="inv-word">'+esc(iv.bizName)+(iv.serviceDesc?'<span class="tag">'+esc(iv.serviceDesc)+'</span>':'')+'</div>'
-    +'<div class="inv-headR"><h1>INVOICE</h1><div class="inv-meta"><b>No.</b> '+esc(iv.number)+'<br><b>Date</b> '+longDate(invDate)+'<br><b>Terms</b> '+esc(iv.terms)+'<br><b>Due</b> '+longDate(due)+'</div></div></div>'
+    +'<div class="inv-headR"><h1>INVOICE</h1><div class="inv-meta"><b>No.</b> '+esc(numInfo.number)+'<br><b>Date</b> '+longDate(invDate)+'<br><b>Terms</b> '+esc(iv.terms)+'<br><b>Due</b> '+longDate(due)+'</div></div></div>'
     +'<div class="inv-parties"><div><div class="inv-lbl">From</div><div class="inv-val"><span class="nm">'+esc(iv.bizName)+'</span>\n'+esc(iv.bizAddr)+'\n'+esc(iv.bizContact)+'</div></div>'
     +'<div style="text-align:right;"><div class="inv-lbl">Bill To</div><div class="inv-val"><span class="nm">'+esc(iv.clientName)+'</span>\n'+esc(iv.clientAddr)+'</div></div></div>'
     +'<div class="inv-lbl inv-period">Service Period · '+rangeStr(start,end)+'</div>'
@@ -913,8 +953,9 @@ function buildInvoiceHtml(){
 function invoiceText(){
   const iv = state.invoice, rate = parseFloat(state.rate) || 0;
   const { lines, start, end, totalHours } = invoiceLines();
-  const invDate = today(), due = dueDate(invDate, iv.terms);
-  let t = iv.bizName.toUpperCase() + ' — INVOICE #' + iv.number + '\n';
+  const numInfo = invoiceNumberFor();
+  const invDate = numInfo.date, due = dueDate(invDate, iv.terms);
+  let t = iv.bizName.toUpperCase() + ' — INVOICE #' + numInfo.number + '\n';
   t += (iv.serviceDesc?iv.serviceDesc+'\n':'') + iv.bizAddr.replace(/\n/g,', ') + ' · ' + iv.bizContact + '\n';
   t += 'Date: ' + longDate(invDate) + '   Terms: ' + iv.terms + '   Due: ' + longDate(due) + '\n\n';
   t += 'Bill To: ' + iv.clientName + ', ' + iv.clientAddr.replace(/\n/g,', ') + '\n';
@@ -929,6 +970,18 @@ function invoiceText(){
 function renderInvoice(){
   $('inv-period').textContent = rangeStr(periodStartFor(viewK), (function(){const d=periodStartFor(viewK); d.setDate(d.getDate()+13); return d;})());
   $('invoice-preview').innerHTML = buildInvoiceHtml();
+  // numbering status: what number this period has / will get
+  const st = $('inv-status'); if (st){
+    const n = invoiceNumberFor();
+    if (!state.invoice.autoNumber) st.innerHTML = 'Manual numbering · Invoice # <b>' + esc(n.number || '—') + '</b>';
+    else if (n.issued) st.innerHTML = '✅ Issued <b>#' + esc(n.number) + '</b> on ' + longDate(n.date) + ' — reprints keep this number · <a href="#" id="inv-unissue">un-issue</a>';
+    else st.innerHTML = 'Auto-numbering · next invoice will be <b>#' + esc(n.number) + '</b> (assigned when you Print / Save PDF)';
+    const u = $('inv-unissue'); if (u) u.onclick = ev => { ev.preventDefault();
+      if (!confirm('Release invoice #' + n.number + ' from this period? Only do this if it was never sent.')) return;
+      unissue(); renderInvoice(); toast('Invoice number released'); };
+  }
+  const sw = $('iv-seq-wrap'), nw = $('iv-number-wrap');
+  if (sw && nw){ sw.style.display = state.invoice.autoNumber ? '' : 'none'; nw.style.display = state.invoice.autoNumber ? 'none' : ''; }
 }
 
 function printInvoice(){
@@ -937,14 +990,20 @@ function printInvoice(){
   document.body.appendChild(ifr);
   const d = ifr.contentWindow.document;
   d.open();
-  d.write('<!doctype html><html><head><meta charset="utf-8"><title>Invoice ' + esc(state.invoice.number) + '</title><style>@page{margin:12mm;} body{margin:0;background:#F7F5F0;} ' + INVOICE_CSS + ' .inv{border:none;max-width:none;padding:0;}</style></head><body>' + buildInvoiceHtml() + '</body></html>');
+  d.write('<!doctype html><html><head><meta charset="utf-8"><title>Invoice ' + esc(invoiceNumberFor().number) + '</title><style>@page{margin:12mm;} body{margin:0;background:#F7F5F0;} ' + INVOICE_CSS + ' .inv{border:none;max-width:none;padding:0;}</style></head><body>' + buildInvoiceHtml() + '</body></html>');
   d.close();
   ifr.contentWindow.focus();
   setTimeout(() => { try{ ifr.contentWindow.print(); }catch(e){} setTimeout(()=>ifr.remove(), 1500); }, 400);
 }
 
 // wiring
-$('inv-print').onclick = printInvoice;
+$('inv-print').onclick = () => {
+  const r = markIssued();          // Auto mode: lock this period's number + date on first print
+  renderInvoice();                 // so the printed copy AND the preview show the issued number
+  printInvoice();
+  if (r) toast(r.isNew ? 'Invoice #' + r.rec.number + ' issued — next will be #' + state.invoice.seq
+                       : 'Reprinting invoice #' + r.rec.number + ' (issued ' + longDate(fromISO(r.rec.date)) + ')');
+};
 $('inv-copy').onclick = () => navigator.clipboard.writeText(invoiceText()).then(()=>toast('Invoice copied as text'));
 $('inv-refresh').onclick = () => { renderInvoice(); toast('Invoice refreshed'); };
 $('inv-groupby').value = state.invoice.groupBy;
@@ -957,6 +1016,10 @@ $('inv-groupby').onchange = e => { state.invoice.groupBy = e.target.value; save(
     'iv-remitBeneficiary':'remitBeneficiary','iv-remitBank':'remitBank','iv-remitRouting':'remitRouting','iv-remitAccount':'remitAccount','iv-notes':'notes'
   };
   for (const id in map){ $(id).value = iv[map[id]] || ''; $(id).addEventListener('input', e => { state.invoice[map[id]] = e.target.value; save(); renderInvoice(); }); }
+  $('iv-autoNumber').value = iv.autoNumber ? '1' : '0';
+  $('iv-autoNumber').addEventListener('change', e => { state.invoice.autoNumber = e.target.value === '1'; save(); renderInvoice(); });
+  $('iv-seq').value = iv.seq;
+  $('iv-seq').addEventListener('input', e => { const v = parseInt(e.target.value, 10); if (v > 0){ state.invoice.seq = v; save(); renderInvoice(); } });
   $('iv-rate').value = state.rate;
   $('iv-rate').addEventListener('input', e => { state.rate = e.target.value; if($('rate')) $('rate').value = e.target.value; save(); renderStats(); updateSumLabel(); if(!draftDirty) rebuildDraft(); renderInvoice(); });
 })();
@@ -1096,6 +1159,29 @@ window.__runTests = function(){
   eq('describe no-colon marker+morning of', describe({source:'Hrs .5 morning of 8/5/26', note:''}), '');
   eq('describe no-colon keeps desc', describe({source:'Hrs .5 8/6. AI projects communication and activities', note:''}), 'AI projects communication and activities');
   eq('describe strips AM', describe({source:'Hrs: 30 mins AM 8/7/26 - EAF tool', note:''}), 'EAF tool');
+  // invoice auto-numbering: issue once per period, reprints reuse, un-issue rolls back, manual untouched
+  (function(){
+    const _iv = JSON.parse(JSON.stringify(state.invoice)), _vk = viewK;
+    state.invoice.autoNumber = true; state.invoice.seq = 5001; state.invoice.issued = {}; viewK = 0;
+    eq('auto: shows next number', invoiceNumberFor().number, '5001');
+    eq('auto: not issued yet', invoiceNumberFor().issued, false);
+    const r1 = markIssued();
+    eq('auto: first print issues', r1.isNew && r1.rec.number === 5001, true);
+    eq('auto: seq bumped', state.invoice.seq, 5002);
+    eq('auto: period keeps its number', invoiceNumberFor().number, '5001');
+    eq('auto: issued date recorded', invoiceNumberFor().date instanceof Date && invoiceNumberFor().issued, true);
+    const r2 = markIssued();
+    eq('auto: reprint is not new', r2.isNew, false);
+    eq('auto: reprint no double bump', state.invoice.seq, 5002);
+    viewK = 1; eq('auto: next period gets next #', invoiceNumberFor().number, '5002');
+    viewK = 0; eq('auto: unissue works', unissue(), true);
+    eq('auto: unissue rolls counter back', state.invoice.seq, 5001);
+    eq('auto: after unissue shows 5001 again', invoiceNumberFor().number + '|' + invoiceNumberFor().issued, '5001|false');
+    state.invoice.autoNumber = false; state.invoice.number = 'ABC-9';
+    eq('manual: uses number field', invoiceNumberFor().number, 'ABC-9');
+    eq('manual: markIssued no-op', markIssued(), null);
+    state.invoice = _iv; viewK = _vk; save();
+  })();
   eq('describe strips empty parens', describe({source:'Hrs: 915-10 on 7/20 (9:15-10:00)', note:''}), '');
   eq('describe keeps text w/ paren time', describe({source:'meeting (2-3pm)', note:''}), 'meeting');
   // buildSummary (deterministic on anchor + viewK + entries)
