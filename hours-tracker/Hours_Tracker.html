@@ -98,6 +98,7 @@
   .sumfields label.full{grid-column:1 / -1;}
   .sumfields input,.sumfields textarea{border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; font-size:13px; color:var(--ink);}
   @media(max-width:560px){ .sumfields{grid-template-columns:1fr;} }
+  .storage-warn{background:var(--amber-soft); color:var(--amber); border:1px solid #f0d9b5; border-radius:10px; padding:10px 14px; font-size:13px; line-height:1.5; margin-bottom:16px;}
   .toast{position:fixed; bottom:22px; left:50%; transform:translateX(-50%); background:var(--ink); color:#fff; padding:10px 20px; border-radius:8px; font-size:13.5px; opacity:0; pointer-events:none; transition:opacity .25s; z-index:50;}
   .toast.show{opacity:.95;}
   .empty-state{text-align:center; color:var(--ink-soft); padding:26px 10px; font-size:14px;}
@@ -258,10 +259,30 @@ const INVOICE_DEFAULTS = {
   notes: 'Thank you for your business.',
   groupBy: 'day'
 };
+/* Storage is unavailable in some contexts (data: URL snapshots, OneDrive/email web previewers,
+   locked-down browsers). The tool must keep working in memory AND tell the user — never fail silently. */
+let storageOK = true;
+function lsGet(k){ try{ return localStorage.getItem(k); }catch(e){ storageOK = false; return null; } }
+function lsSet(k, v){ try{ localStorage.setItem(k, v); return true; }catch(e){ storageOK = false; return false; } }
+function lsRemove(k){ try{ localStorage.removeItem(k); return true; }catch(e){ storageOK = false; return false; } }
+(function probeStorage(){ // detect a blocked store up front, before the user types 20 entries
+  const k = LS_KEY + '__probe';
+  if (!lsSet(k, '1') || lsGet(k) !== '1'){ storageOK = false; }
+  lsRemove(k);
+})();
+function showStorageWarning(){
+  if (document.getElementById('storage-warn')) return;
+  const el = document.createElement('div');
+  el.id = 'storage-warn'; el.className = 'storage-warn no-print';
+  el.innerHTML = '<b>⚠ This browser is blocking saved data.</b> Your entries will only last until you close this page — '
+    + 'this happens in web previewers (OneDrive, email attachments) or locked-down browsers. '
+    + '<b>Fix:</b> download the file and open it directly in Chrome/Edge. Meanwhile, use <b>💾 Backup JSON</b> before leaving.';
+  const wrap = document.querySelector('.wrap'); wrap.insertBefore(el, wrap.children[2] || null);
+}
 let state = load();
 function load(){
   try{
-    const s = JSON.parse(localStorage.getItem(LS_KEY));
+    const s = JSON.parse(lsGet(LS_KEY));
     if (s && Array.isArray(s.entries)){
       const firstUpgrade = !s.summary;   // moving to Sun–Sat weeks on first run of this version
       return {
@@ -275,7 +296,11 @@ function load(){
   }catch(e){}
   return { entries: [], weekStart: 0, rate: '', summary: Object.assign({}, SUMMARY_DEFAULTS), invoice: Object.assign({}, INVOICE_DEFAULTS) };
 }
-function save(){ localStorage.setItem(LS_KEY, JSON.stringify(state)); }
+function save(){
+  const ok = lsSet(LS_KEY, JSON.stringify(state));
+  if (!ok || !storageOK) showStorageWarning();   // keep working in memory, but make the risk visible
+  return ok;
+}
 let undoStack = null; // {type:'add', ids:[]} | {type:'delete', entry:{}}
 
 /* ============================ date utils ============================ */
@@ -715,6 +740,7 @@ function describe(e){
   s = s.replace(/\b(mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(day)?\b/gi, ' ');
   s = s.replace(/^\s*\.?\d{1,2}(?:\.\d{1,2})?(?=\s|$)/, ' ');           // bare leading number logged as hours
   s = s.replace(/\bplus\b/gi, ' ');
+  s = s.replace(/[\(\[]\s*[\)\]]/g, ' ');                               // empty brackets left after stripping a time/date inside them
   s = s.replace(/\s+/g, ' ').replace(/^[\s,\-–:;.]+|[\s,\-–:;.]+$/g, '').trim();
   return s;
 }
@@ -723,21 +749,22 @@ function buildSummary(){
   const start = periodStartFor(viewK), end = new Date(start); end.setDate(end.getDate()+13);
   const total = periodEntries(start, end).reduce((s,e)=>s+e.minutes,0);
   const S = state.summary;
+  const hlbl = v => v + (v === 1 ? ' hr' : ' hrs');   // "1 hr" not "1 hrs"
   let body = S.greeting + '\n\n' + S.intro + '\n\n';
-  body += 'Total: ' + hrs(total) + ' hrs for ' + rangeStr(start, end) + '.' + (money(total)? '  ('+money(total)+')':'') + '\n';
+  body += 'Total: ' + hlbl(hrs(total)) + ' for ' + rangeStr(start, end) + '.' + (money(total)? '  ('+money(total)+')':'') + '\n';
   for (let w=0; w<2; w++){
     const ws = new Date(start); ws.setDate(ws.getDate() + w*7);
     const we = new Date(ws);    we.setDate(we.getDate() + 6);
     const wents = periodEntries(ws, we);
     if (!wents.length) continue;
     const wt = wents.reduce((a,e)=>a+e.minutes,0);
-    body += '\n' + rangeStr(ws, we) + ' — ' + hrs(wt) + ' hrs\n';
+    body += '\n' + rangeStr(ws, we) + ' — ' + hlbl(hrs(wt)) + '\n';
     const byday = {};
     for (const e of wents){ (byday[e.date] = byday[e.date] || []).push(e); }
     for (const d of Object.keys(byday).sort()){
       const dents = byday[d], dt = dents.reduce((a,e)=>a+e.minutes,0);
       const descs = dents.map(describe).filter(Boolean);
-      body += '  • ' + fmtDay(d) + ' — ' + hrs(dt) + ' hrs' + (descs.length ? ': ' + descs.join(', ') : '') + '\n';
+      body += '  • ' + fmtDay(d) + ' — ' + hlbl(hrs(dt)) + (descs.length ? ': ' + descs.join(', ') : '') + '\n';
     }
   }
   body += '\n' + S.closing + '\n\n' + S.signature + '\n';
@@ -1046,6 +1073,23 @@ window.__runTests = function(){
   eq('parseBatch Hrs range still works', (function(){ const r=parseBatch('Hrs: 915-10 on 7/20'); return r.entries.length===1 && r.entries[0].minutes; })(), 45);
   eq('describe strips Hrs marker+num', describe({source:'Hrs: .5 7/20', note:''}), '');
   eq('describe keeps desc after Hrs num', describe({source:'Hrs: 2 7/21 board deck', note:''}), 'board deck');
+  // storage resilience: a blocked store must never throw, and must surface a warning
+  (function(){
+    const realSet = Storage.prototype.setItem, realOK = storageOK;
+    Storage.prototype.setItem = function(){ throw new DOMException('blocked','SecurityError'); };
+    let threw = false, ret;
+    try { ret = save(); } catch(e){ threw = true; }
+    Storage.prototype.setItem = realSet;
+    eq('save() survives blocked storage', threw, false);
+    eq('save() reports failure', ret, false);
+    eq('blocked storage shows warning', !!document.getElementById('storage-warn'), true);
+    // restore: remove the test-triggered banner only if storage is genuinely fine
+    storageOK = realOK;
+    if (realOK){ const w = document.getElementById('storage-warn'); if (w) w.remove(); }
+  })();
+  eq('lsGet survives blocked storage', (function(){ const r=Storage.prototype.getItem, ok=storageOK; Storage.prototype.getItem=function(){throw new Error('x');}; let v; try{ v=lsGet('k'); }catch(e){ v='THREW'; } Storage.prototype.getItem=r; storageOK=ok; return v; })(), null);
+  eq('describe strips empty parens', describe({source:'Hrs: 915-10 on 7/20 (9:15-10:00)', note:''}), '');
+  eq('describe keeps text w/ paren time', describe({source:'meeting (2-3pm)', note:''}), 'meeting');
   // buildSummary (deterministic on anchor + viewK + entries)
   const _e=state.entries, _v=viewK, _a=state.summary.anchor;
   state.summary.anchor='2026-07-05'; viewK=0;
@@ -1081,6 +1125,7 @@ window.__runTests = function(){
 };
 
 renderAll();
+if (!storageOK) showStorageWarning();   // warn immediately if the store was already blocked at load
 </script>
 </body>
 </html>
